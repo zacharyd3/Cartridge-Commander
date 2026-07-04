@@ -3240,7 +3240,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
         # Architecture: fully kernel-managed pipeline, Python is NOT in the data path.
         #
         #   tar -C / -cf - --sparse [paths]
-        #     └─ stdout ──► mbuffer -m 512M -s 512k -P 75 -A   (smoothing ring buffer)
+        #     └─ stdout ──► mbuffer -m 512M -s 512k -P 75   (smoothing ring buffer)
         #                     └─ stdout ──► dd bs=512k of=/dev/nst0
         #
         # If mbuffer is present: it handles both buffering AND progress stats via stderr.
@@ -3314,7 +3314,6 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
             # -s: block size (must match tape block size)
             # -m: total ring buffer size
             # -P: start writing when buffer reaches this % full (reduces shoe-shining)
-            # -A: async input/output threads (prevents filesystem stalls from stalling tape)
             # -v 1: emit one stats line per second to stderr
             # -q: suppress the summary at exit (we log it ourselves)
             mbuf_cmd = [
@@ -3322,7 +3321,6 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
                 "-s", str(_TAPE_BLOCK_BYTES),
                 "-m", _MBUF_SIZE,
                 "-P", str(_MBUF_FILL_PCT),
-                "-A",
                 "-v", "1",
                 "-q",
             ]
