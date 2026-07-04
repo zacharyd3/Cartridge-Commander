@@ -6873,6 +6873,7 @@ function showPage(name){
 function renderPage(){
   if(G.page==='schedule') captureScheduleDraft();
   const c = $('content');
+  const scrollTop = c.scrollTop;
   c.innerHTML = '';
   if(G.page==='library')  renderLibraryPage(c);
   else if(G.page==='backup')   renderBackupPage(c);
@@ -6880,6 +6881,13 @@ function renderPage(){
   else if(G.page==='schedule') { renderSchedulePage(c); applyScheduleDraft(); }
   else if(G.page==='log')      renderLogPage(c);
   else if(G.page==='settings') renderSettingsPage(c);
+  // Rebuilding innerHTML resets scroll to the top — restore it so a background poll
+  // refresh doesn't yank the page out from under someone scrolled further down.
+  c.scrollTop = scrollTop;
+  // Some sections (e.g. the format tape list) populate their rows a tick later via
+  // setTimeout(0), which can grow the page's height after we just restored scrollTop.
+  // Re-apply once more after those catch up.
+  setTimeout(() => { c.scrollTop = scrollTop; }, 0);
 }
 
 // ── Global render (called every poll) ───────────────────────────────────────
