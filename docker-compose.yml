@@ -1,0 +1,28 @@
+services:
+  cartridge-commander:
+    build: .
+    image: cartridge-commander:latest
+    container_name: tape-tools
+    restart: unless-stopped
+    ports:
+      - "8099:8080"
+    environment:
+      TZ: "America/New_York"
+      TL_CHANGER: "/dev/sg12"
+      TL_TAPE: "/dev/nst0"
+      SG_DEVICE: "/dev/sg0"
+      MQTT_HOST: "192.168.250.3"
+      MQTT_PORT: "1883"
+      TL_POLL_SECONDS: "5"
+      BACKUP_ROOT: "/mnt"
+      RESTORE_ROOT: "/mnt"
+      AUTO_REWIND_AFTER_BACKUP: "true"
+      ERASE_BEFORE_BACKUP: "false"
+      VERIFY_AFTER_BACKUP: "true"
+    volumes:
+      - /mnt/cache/appdata/TL2000:/var/lib/tl2000
+      - /mnt:/mnt
+    devices:
+      - /dev/sg12:/dev/sg12
+      - /dev/sg0:/dev/sg0
+      - /dev/nst0:/dev/nst0

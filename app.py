@@ -6313,6 +6313,12 @@ def api_drive_check():
     publish_state_to_mqtt(state)
     return jsonify({"ok": True, "state": state, "drive_info": get_drive_info()})
 
+@app.get("/healthz")
+def healthz():
+    # Deliberately does not touch the changer/tape hardware or require auth --
+    # used by the container HEALTHCHECK and must stay fast even mid-backup.
+    return jsonify({"ok": True})
+
 @app.get("/icon.png")
 @app.get("/favicon.ico")
 def serve_icon():
