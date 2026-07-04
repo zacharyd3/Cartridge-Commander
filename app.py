@@ -3749,6 +3749,13 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
                             for line in _lf.read().splitlines()
                             if line.strip()
                         ]
+                    # With --listed-incremental, tar's own diagnostics (e.g.
+                    # "tar: mnt/foo: Directory is new") are written to stderr
+                    # alongside the verbose member list, since stdout is the
+                    # archive stream. Both land in the same log file, so strip
+                    # tar's diagnostic lines here — otherwise they get indexed
+                    # as bogus "tar: ..." entries in the restore browser.
+                    fl = [p for p in fl if not p.startswith("tar: ")]
                     # tar's verbose create log (captured on stderr, since stdout is the
                     # archive stream) reports each member's SOURCE path — i.e. before
                     # --transform is applied. The archive itself stores every member
