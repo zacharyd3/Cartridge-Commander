@@ -6760,6 +6760,8 @@ let G = {
   scheduleDraft: null,
   activeAction: null,   // {msg, status} — shown as banner on library page
   _rapidPolling: false, // true while prep-phase rapid polls are running
+  fmtSelected: new Set(),  // volume_tags checked in the Format Tapes card
+  fmtCatalogOnly: false,   // "Catalog-only reset" checkbox state
 };
 
 // ── Utils ────────────────────────────────────────────────────────────────────
@@ -7511,7 +7513,7 @@ function renderFormatCard(c){
     <div id="fmt-tape-list" class="file-list" style="max-height:260px;margin-bottom:10px;"></div>
     <div style="background:var(--surf2);border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,.07);padding:10px 12px;margin-bottom:10px;">
       <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-        <input type="checkbox" id="fmt-catalog-only" style="margin-top:2px;accent-color:var(--blue);flex-shrink:0;" onchange="fmtUpdateCount()"/>
+        <input type="checkbox" id="fmt-catalog-only" ${G.fmtCatalogOnly?'checked':''} style="margin-top:2px;accent-color:var(--blue);flex-shrink:0;" onchange="G.fmtCatalogOnly=this.checked;fmtUpdateCount()"/>
         <span>
           <span style="font-size:13px;font-weight:600;">Catalog-only reset</span><br/>
           <span class="text-muted" style="font-size:11px;line-height:1.5;">
@@ -7541,21 +7543,28 @@ function renderFormatCard(c){
       const usedStr = idxMeta?.space?.used_bytes ? hBytes(idxMeta.space.used_bytes)+' used' : '';
       const fileStr = idxMeta?.file_count ? idxMeta.file_count.toLocaleString()+' files' : '';
       const infoStr = [usedStr, fileStr].filter(Boolean).join(' · ');
+      const sel = G.fmtSelected.has(s.volume_tag);
       const row = el('div','file-row');
       row.dataset.slot = s.slot;
       row.dataset.vol  = s.volume_tag;
       row.innerHTML = `
-        <input type="checkbox" class="file-check fmt-check"/>
+        <input type="checkbox" class="file-check fmt-check" ${sel?'checked':''}/>
         <span class="file-icon">📼</span>
         <div style="flex:1;min-width:0;">
           <div class="mono" style="font-size:12px;font-weight:600;">${s.volume_tag}</div>
           <div class="text-sm text-muted">Slot ${s.slot}${infoStr?' · '+infoStr:''}</div>
         </div>`;
       const cb = row.querySelector('input');
-      cb.onchange = () => fmtUpdateCount();
+      cb.onchange = () => {
+        cb.checked ? G.fmtSelected.add(s.volume_tag) : G.fmtSelected.delete(s.volume_tag);
+        fmtUpdateCount();
+      };
       row.onclick = e => { if(e.target.type!=='checkbox'){ cb.checked=!cb.checked; cb.dispatchEvent(new Event('change')); }};
       list.appendChild(row);
     }
+    // Drop selections for tapes no longer in the candidate list (formatted/removed).
+    const candidateTags = new Set(candidates.map(s=>s.volume_tag));
+    for(const tag of [...G.fmtSelected]) if(!candidateTags.has(tag)) G.fmtSelected.delete(tag);
     fmtUpdateCount();
 
     // Populate format log if job ran
@@ -7590,11 +7599,15 @@ function fmtUpdateCount(){
 }
 
 function fmtSelectAll(){
-  document.querySelectorAll('.fmt-check').forEach(c=>{ c.checked=true; });
+  document.querySelectorAll('#fmt-tape-list .file-row').forEach(row=>{
+    const cb = row.querySelector('.fmt-check');
+    if(cb){ cb.checked=true; if(row.dataset.vol) G.fmtSelected.add(row.dataset.vol); }
+  });
   fmtUpdateCount();
 }
 function fmtSelectNone(){
   document.querySelectorAll('.fmt-check').forEach(c=>{ c.checked=false; });
+  G.fmtSelected.clear();
   fmtUpdateCount();
 }
 
@@ -7647,6 +7660,7 @@ async function startFormat(){
 
   const data = await api('/api/format/start','POST',{tapes: selected, catalog_only: catalogOnly});
   if(!data.ok){ alert(data.error||'Format failed to start.'); return; }
+  G.fmtSelected.clear();
   await pollOnce();
 }
 
