@@ -1,0 +1,9 @@
+# Stable device names for the IBM TL2000 / 3573-TL, keyed by vendor+model
+# instead of the sg/st index the kernel happens to assign this boot (that
+# index shifts whenever other SCSI/USB storage is added, removed, or the
+# library is power-cycled after other devices have already enumerated).
+#
+# Match strings come from `sg_inq /dev/sgN` — adjust if your drive generation
+# differs (this one is an LTO-6 half-height, IBM ULT3580-HH6).
+SUBSYSTEM=="scsi_generic", ATTRS{vendor}=="IBM*", ATTRS{model}=="3573-TL*", SYMLINK+="tape-changer"
+SUBSYSTEM=="scsi_generic", ATTRS{vendor}=="IBM*", ATTRS{model}=="ULT3580-HH6*", SYMLINK+="tape-drive-sg"

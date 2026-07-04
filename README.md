@@ -43,9 +43,9 @@ In the Unraid GUI, **Docker > Add Container**, and fill in:
 
 | Container Device | Host Device |
 |---|---|
-| `/dev/sg12` | `/dev/sg12` (the changer — matches `TL_CHANGER`) |
-| `/dev/nst0` | `/dev/nst0` (the tape drive, non-rewinding — matches `TL_TAPE`) |
-| `/dev/sg0` | `/dev/sg0` (drive's generic device, only if using `SG_DEVICE` health polling) |
+| `/dev/tape-changer` | the changer — matches `TL_CHANGER` (see [Stable device paths](#stable-device-paths-recommended)) |
+| `/dev/nst0` | the tape drive, non-rewinding — matches `TL_TAPE` |
+| `/dev/tape-drive-sg` | drive's generic device, only if using `SG_DEVICE` health polling |
 
 Passing explicit `--device` entries is enough for the container (running
 as root by default) to read/write those nodes — **you do not need
@@ -54,6 +54,50 @@ and capability on the host, which is unnecessary blast radius once the
 specific devices are mapped, and can mask the day your `/dev/sg*` numbering
 shifts (a privileged container silently still has access; a non-privileged
 one fails loudly, telling you the mapping is stale).
+
+### Stable device paths (recommended)
+
+`/dev/sgN` numbering is **not stable** — it's assigned in enumeration order
+at boot, so it can shift any time another SCSI/USB storage device is added,
+removed, or the library gets power-cycled after other devices have already
+come up. If your changer suddenly starts reporting a "Request Sense:
+Illegal Request" error, or the app reports 0 tapes despite the library being
+inventoried fine by hand, this renumbering is almost always why:
+
+```bash
+# find which /dev/sgN is currently the changer (PDT type 8) vs. the drive (type 1)
+dmesg | grep -i "Attached scsi generic"
+docker exec -it <container> sg_inq /dev/sgN   # confirm vendor/model per node
+```
+
+To stop chasing this every time, pin the devices by vendor/model instead of
+by number using the udev rule in [`udev-rules/99-tl2000.rules`](udev-rules/99-tl2000.rules)
+(edit the `model` match if your drive generation differs from the IBM
+ULT3580-HH6 it ships with). On Unraid, `/etc/udev/rules.d` doesn't survive a
+reboot — the OS is rebuilt from the flash drive each boot — so the rule has
+to live under `/boot/config` and get installed by the `go` script:
+
+```bash
+mkdir -p /boot/config/udev-rules
+cp udev-rules/99-tl2000.rules /boot/config/udev-rules/
+```
+
+Append to `/boot/config/go`:
+
+```bash
+mkdir -p /etc/udev/rules.d
+cp /boot/config/udev-rules/*.rules /etc/udev/rules.d/
+udevadm control --reload-rules
+udevadm trigger
+```
+
+Run those three lines by hand once (or reboot) to pick up the rule
+immediately. `/dev/tape-changer` and `/dev/tape-drive-sg` will now always
+point at the right hardware, and Docker resolves `--device` symlinks at
+container start — so after the next reboot, just restarting the container
+picks up whatever `sgN` udev assigned this time, with no template edits.
+Point `TL_CHANGER`/`SG_DEVICE` (and the matching `--device` flags) at these
+symlinks instead of raw `/dev/sgN` paths.
 
 **Variables** (env vars) — only set what differs from the defaults:
 
