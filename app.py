@@ -6476,6 +6476,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px;}
 .tile-badge.green{background:rgba(34,197,94,.15);color:var(--green);}
 
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
 /* ── Action status banner ───────────────────────────────────────────────── */
 .action-banner{
@@ -6485,6 +6486,8 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px;}
   animation:pulse 1.2s ease-in-out infinite;
 }
 .action-banner .banner-icon{font-size:18px;flex-shrink:0;}
+.action-banner .banner-icon.spin{display:inline-block;animation:spin 1s linear infinite;}
+.action-banner .banner-elapsed{margin-left:auto;flex-shrink:0;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;}
 .action-banner.success{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.3);color:var(--green);animation:none;}
 .action-banner.error{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.3);color:var(--red);animation:none;}
 .action-banner.running{padding:12px 14px;animation:none;}
@@ -6758,6 +6761,7 @@ let G = {
   scheduleDraft: null,
   activeAction: null,   // {msg, status} — shown as banner on library page
   _rapidPolling: false, // true while prep-phase rapid polls are running
+  _changerRapidPolling: false, // true while a changer op (load/unload/reindex/…) rapid-polls
   fmtSelected: new Set(),  // volume_tags checked in the Format Tapes card
   fmtCatalogOnly: false,   // "Catalog-only reset" checkbox state
 };
@@ -6869,6 +6873,7 @@ function showPage(name){
 function renderPage(){
   if(G.page==='schedule') captureScheduleDraft();
   const c = $('content');
+  const scrollTop = c.scrollTop;
   c.innerHTML = '';
   if(G.page==='library')  renderLibraryPage(c);
   else if(G.page==='backup')   renderBackupPage(c);
@@ -6876,6 +6881,13 @@ function renderPage(){
   else if(G.page==='schedule') { renderSchedulePage(c); applyScheduleDraft(); }
   else if(G.page==='log')      renderLogPage(c);
   else if(G.page==='settings') renderSettingsPage(c);
+  // Rebuilding innerHTML resets scroll to the top — restore it so a background poll
+  // refresh doesn't yank the page out from under someone scrolled further down.
+  c.scrollTop = scrollTop;
+  // Some sections (e.g. the format tape list) populate their rows a tick later via
+  // setTimeout(0), which can grow the page's height after we just restored scrollTop.
+  // Re-apply once more after those catch up.
+  setTimeout(() => { c.scrollTop = scrollTop; }, 0);
 }
 
 // ── Global render (called every poll) ───────────────────────────────────────
@@ -6976,6 +6988,11 @@ function applyState(data){
         } else if(cj.status === 'failed'){
           G.activeAction = {msg: '❌ ' + (cj.error || 'Failed'), status:'error', _action: act};
         }
+      } else if((act === 'load' || act === 'unload' || act === 'reindex') && cj.running && cj.detail){
+        // Still running — surface the changer's live phase text (e.g. "Reading index for…")
+        // instead of leaving the initial static message up the whole time.
+        const liveMsg = '⏳ ' + cj.detail;
+        if(G.activeAction.msg !== liveMsg) G.activeAction = {...G.activeAction, msg: liveMsg};
       }
     }
 
@@ -7058,7 +7075,10 @@ function renderLibraryPage(c){
           <button class="btn sm" onclick="showPage('backup')" style="flex-shrink:0;font-size:11px;">View</button>
         </div>`;
     } else {
-      banner.innerHTML = `<span class="banner-icon">${bannerIcon}</span><span>${bannerMsg}</span>`;
+      const working = G.activeAction?.status === 'working';
+      const elapsedHtml = working && G.activeAction?.started
+        ? `<span class="banner-elapsed" id="action-elapsed">${fmtSec((Date.now()-G.activeAction.started)/1000)} elapsed</span>` : '';
+      banner.innerHTML = `<span class="banner-icon${working?' spin':''}">${bannerIcon}</span><span>${bannerMsg}</span>${elapsedHtml}`;
     }
     c.appendChild(banner);
   }
@@ -9727,8 +9747,11 @@ async function tapeDrawerAction(action, body){
   res.style.color = 'var(--amber)';
   res.textContent = msg;
 
-  G.activeAction = {msg, status:'working', _action: action};
+  G.activeAction = {msg, status:'working', _action: action, started: Date.now()};
   if(G.page==='library') renderPage();
+  // Mechanical changer ops (load/unload/reindex) run as a background job we can poll —
+  // poll it faster than the default 5s cadence so the banner updates promptly on completion.
+  if(action === 'load' || action === 'unload' || action === 'reindex') startChangerRapidPoll();
 
   const btns = acts ? [...acts.querySelectorAll('button')] : [];
   btns.forEach(b => { b.disabled = true; });
@@ -9781,6 +9804,22 @@ async function tapeDrawerAction(action, body){
     G.activeAction = {msg: '✓ ' + (data.detail || 'Done'), status:'success', _action: action};
     await pollOnce();
   }
+}
+
+function startChangerRapidPoll(){
+  if(G._changerRapidPolling) return;
+  G._changerRapidPolling = true;
+  let ticks = 0;
+  const rapidPoll = async () => {
+    await pollOnce();
+    ticks++;
+    if(G.state?.changer_job?.running && ticks < 180){
+      setTimeout(rapidPoll, 2000);
+    } else {
+      G._changerRapidPolling = false;
+    }
+  };
+  setTimeout(rapidPoll, 2000);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -9925,6 +9964,16 @@ async function pollOnce(){
 
 pollOnce();
 setInterval(pollOnce, {{ polling * 1000 }});
+
+// Ticks the "Xs elapsed" readout on the active-action banner every second, independent
+// of the poll cadence, so long mechanical tape ops (load/unload/etc.) visibly keep
+// moving instead of sitting on a static message for 5+ seconds at a time.
+setInterval(() => {
+  const el = $('action-elapsed');
+  if(el && G.activeAction?.status === 'working' && G.activeAction.started){
+    el.textContent = fmtSec((Date.now()-G.activeAction.started)/1000) + ' elapsed';
+  }
+}, 1000);
 </script>
 </body>
 </html>
