@@ -6897,10 +6897,21 @@ function renderPage(){
   setTimeout(() => { c.scrollTop = scrollTop; }, 0);
 }
 
+// Fields the Library page actually renders from /api/status — used to decide
+// whether a poll needs a repaint at all. Deliberately excludes last_updated
+// (changes every poll) so an idle library doesn't flash on every 5s tick.
+function _librarySnapshot(state){
+  return JSON.stringify({
+    slots: state.slots, drive: state.drive, summary: state.summary,
+    backup_job: state.backup_job, changer_job: state.changer_job,
+    format_job: state.format_job, inventory_job: state.inventory_job,
+  });
+}
+
 // ── Global render (called every poll) ───────────────────────────────────────
 function pageWantsLiveRefresh(page, prevState, nextState){
   if(!prevState) return true;
-  if(page==='library') return true;
+  if(page==='library') return _librarySnapshot(prevState) !== _librarySnapshot(nextState);
   if(page==='log') return false;
   if(page==='settings') return false;
   if(page==='schedule') return false;
@@ -9965,6 +9976,7 @@ async function pollOnce(){
   // pages like Schedule.
   const needsLibraryData = wasLibrary || !!$('tape-drawer')?.classList.contains('open');
   if(needsLibraryData){
+    const prevDriveInfo = G.driveInfo, prevIndexMeta = G.indexMeta, prevTapeHistory = G.tapeHistoryMap;
     const [diData, idxData, histData] = await Promise.all([
       api('/api/drive_info'),
       api('/api/tape_index'),
@@ -9973,9 +9985,17 @@ async function pollOnce(){
     if(diData.ok) G.driveInfo = diData.drive_info;
     if(idxData.ok) G.indexMeta = idxData.indexes||[];
     if(histData.ok) G.tapeHistoryMap = histData.history||{};
-  }
 
-  if(wasLibrary) renderPage();
+    // This extra data isn't covered by pageWantsLiveRefresh's snapshot (it's fetched
+    // separately, after applyState already decided whether to repaint) — only repaint
+    // for it if something actually changed, otherwise the Library page would still
+    // flash every poll even with nothing new to show.
+    const changed =
+      JSON.stringify(prevDriveInfo)   !== JSON.stringify(G.driveInfo) ||
+      JSON.stringify(prevIndexMeta)   !== JSON.stringify(G.indexMeta) ||
+      JSON.stringify(prevTapeHistory) !== JSON.stringify(G.tapeHistoryMap);
+    if(wasLibrary && changed) renderPage();
+  }
 }
 
 pollOnce();
