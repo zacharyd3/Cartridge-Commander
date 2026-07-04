@@ -8363,26 +8363,15 @@ function openRestoreDestDrawer(restoreAll){
     destInput.addEventListener('input', updateRestorePathPreview);
   }
 
-  // Pre-fill destination: fetch the server-expanded default for this volume,
-  // then override with the active session name if one is selected.
-  if(vol){
-    api(`/api/restore/default_dest?volume_tag=${encodeURIComponent(vol)}`).then(r=>{
-      // Check if a specific session is selected — use that as the dest subfolder
-      const activeSession = document.querySelector('input[name="restore-session"]:checked');
-      const sessionName = activeSession && activeSession.value ? activeSession.value : '';
-      let dest = (r.ok && r.dest) ? r.dest : '{{ restore_root }}';
-      // If a session is selected, restore into RESTORE_ROOT/sessionName directly
-      // (the archive already contains sessionName/ as its top-level prefix)
-      if(sessionName){
-        dest = '{{ restore_root }}';
-      }
-      $('restore-dest-input').value = dest;
-      updateRestorePathPreview();
-      ensureRestoreBrowser(dest);
-    }).catch(()=>{ ensureRestoreBrowser($('restore-dest-input').value || '{{ restore_root }}'); });
-  } else {
-    ensureRestoreBrowser($('restore-dest-input').value || '{{ restore_root }}');
-  }
+  // Pre-fill destination: always the bare restore root. Every archive already
+  // embeds its own top-level folder (the "Restore subfolder pattern", e.g.
+  // KB2789L6_2026-07-04/) as a tar --transform prefix baked into every member
+  // path, so appending that same pattern to the destination here would double
+  // it up — e.g. .../Restored/KB2789L6_2026-07-04/KB2789L6_2026-07-04/...
+  const dest = '{{ restore_root }}';
+  $('restore-dest-input').value = dest;
+  updateRestorePathPreview();
+  ensureRestoreBrowser(dest);
 }
 
 function closeRestoreDestDrawer(e){
