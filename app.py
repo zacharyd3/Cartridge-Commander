@@ -7513,7 +7513,7 @@ function renderFormatCard(c){
     <div id="fmt-tape-list" class="file-list" style="max-height:260px;margin-bottom:10px;"></div>
     <div style="background:var(--surf2);border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,.07);padding:10px 12px;margin-bottom:10px;">
       <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-        <input type="checkbox" id="fmt-catalog-only" ${G.fmtCatalogOnly?'checked':''} style="margin-top:2px;accent-color:var(--blue);flex-shrink:0;" onchange="G.fmtCatalogOnly=this.checked;fmtUpdateCount()"/>
+        <input type="checkbox" id="fmt-catalog-only" ${G.fmtCatalogOnly?'checked':''} style="width:16px;height:16px;margin-top:2px;accent-color:var(--blue);flex-shrink:0;" onchange="G.fmtCatalogOnly=this.checked;fmtUpdateCount()"/>
         <span>
           <span style="font-size:13px;font-weight:600;">Catalog-only reset</span><br/>
           <span class="text-muted" style="font-size:11px;line-height:1.5;">
