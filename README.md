@@ -122,6 +122,27 @@ environment variable with a sane default.
 The image's `HEALTHCHECK` hits `GET /healthz`, which responds immediately
 without touching the changer or drive — safe to poll even mid-backup.
 
+### Updating
+
+Restarting the container alone never picks up new code — a container is
+bound to the exact image snapshot it was created from, not just the image
+tag, so rebuilding `cartridge-commander:latest` doesn't change what an
+already-running container is executing. [`scripts/update.sh`](scripts/update.sh)
+stops the container, re-downloads the repo, and rebuilds the image tag;
+it deliberately does **not** recreate/start the container itself. After it
+finishes, go to **Docker > `CartridgeCommander` > Edit > Apply** (no fields
+need changing) — this makes Unraid recreate the container from its own
+saved template against the freshly built image and start it. Recreating
+via the template this way (rather than scripting a hardcoded `docker run`)
+means there's no risk of the update script's flags drifting out of sync
+with whatever you've actually configured in the GUI.
+
+This is a good candidate for Unraid's User Scripts plugin: paste the
+script in as a new script and trigger it manually (a "Run Script" click)
+rather than on a schedule — auto-pulling and swapping in unreviewed
+upstream changes to a container driving physical hardware, unattended,
+is worth avoiding.
+
 ## Local testing
 
 `docker-compose.yml` mirrors the layout above for testing on a dev box
