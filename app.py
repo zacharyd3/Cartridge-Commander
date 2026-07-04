@@ -3749,6 +3749,13 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
                             for line in _lf.read().splitlines()
                             if line.strip()
                         ]
+                    # tar's verbose create log (captured on stderr, since stdout is the
+                    # archive stream) reports each member's SOURCE path — i.e. before
+                    # --transform is applied. The archive itself stores every member
+                    # under f"{_backup_dirname}/...", so re-derive the real in-archive
+                    # paths here; otherwise the saved index doesn't match what's on
+                    # tape and selective restores fail with "Not found in archive".
+                    fl = [f"{_backup_dirname}/{p}" for p in fl]
                     # Clean up now that we've read it
                     try:
                         os.unlink(_log_path_for_index)
@@ -8467,8 +8474,28 @@ async function confirmRestore(){
   $('restore-dest-result').textContent='Starting restore…';
   const data = await api('/api/restore/start','POST', payload);
   if(data.ok){
+    // Seed the fresh restore_job from this response so the Restore page shows
+    // "running" immediately, instead of the stale pre-restore state until the
+    // next poll lands (up to POLL_SECONDS later) — the app looked frozen right
+    // when the user expects the most immediate confirmation that it's working.
+    if(data.restore_job && G.state) G.state.restore_job = data.restore_job;
     $('restore-dest-drawer').classList.remove('open');
     showPage('restore');
+
+    // Poll rapidly while the tape is loading/rewinding (before extraction, which
+    // has its own progress) so phase updates land every 2s instead of POLL_SECONDS.
+    const prepPhases = new Set(['preparing','rewinding']);
+    let rapidPollCount = 0;
+    const rapidPoll = async () => {
+      await pollOnce();
+      const status = G.state?.restore_job?.status || 'idle';
+      const running = G.state?.restore_job?.running;
+      if(running && prepPhases.has(status) && rapidPollCount < 60){
+        rapidPollCount++;
+        setTimeout(rapidPoll, 2000);
+      }
+    };
+    setTimeout(rapidPoll, 1500);
   } else {
     $('restore-dest-result').textContent = '❌ '+data.error;
   }
