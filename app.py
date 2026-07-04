@@ -864,6 +864,24 @@ def _is_tape_full_error(err: Exception) -> bool:
     return any(p in msg for p in patterns)
 
 
+def _mt_status_shows_eot() -> bool:
+    """Check `mt status` for EOD/EOT flags.
+
+    Some drives/kernels report a bare "Input/output error" from dd — instead of
+    the more explicit ENOSPC-style wording matched by `_is_tape_full_error` —
+    when a write hits the physical end of the tape. That's easy to hit on a
+    bigger multi-folder backup that a smaller single-folder backup never
+    reached. Querying the drive directly distinguishes "actually out of tape"
+    from a genuine drive/media fault so we don't misreport the latter as full.
+    """
+    try:
+        text = run_cmd(["mt", "-f", TAPE, "status"], timeout=30)
+    except Exception:
+        return False
+    upper = (text or "").upper()
+    return "EOD" in upper or "EOT" in upper
+
+
 def _candidate_rewrite_tapes(current_volume: str = "") -> List[Dict[str, Any]]:
     state = refresh_state()
     present_slots = {
@@ -3675,13 +3693,28 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
         except Exception:
             pass
 
-        # Check dd for tape-full — dd exits non-zero with ENOSPC when tape is full
+        # Check dd for tape-full — dd exits non-zero with ENOSPC when tape is full.
+        # Some drives/kernels instead report a bare "Input/output error" for the
+        # same condition (hit more often on bigger multi-folder backups that run
+        # past where a smaller single-folder backup used to stop) — confirm via
+        # `mt status` EOD/EOT flags before treating that ambiguous case as full.
         if dd_rc not in (0, -15) and not cancel_requested:
-            if AUTO_REWRITE_ON_FULL and _is_tape_full_error(Exception(dd_err_out)):
+            tape_full = _is_tape_full_error(Exception(dd_err_out))
+            if not tape_full and "input/output error" in dd_err_out.lower():
+                tape_full = _mt_status_shows_eot()
+                if tape_full:
+                    append_backup_log(
+                        "dd reported a bare I/O error; mt status confirms EOD/EOT — treating as tape-full.",
+                        level="normal",
+                    )
+            if AUTO_REWRITE_ON_FULL and tape_full:
                 append_backup_log(f"Tape full detected (dd rc={dd_rc}): {dd_err_out[:200]}", level="minimal")
                 append_backup_log("Switching to oldest available/recyclable tape and restarting.", level="minimal")
                 _switch_to_rewrite_candidate(vol)
                 return backup_worker(selected, backup_mode=backup_mode, job_id=job_id, label=label, log_level=log_level)
+            elif tape_full:
+                append_backup_log(f"Tape full detected (dd rc={dd_rc}): {dd_err_out[:200]}", level="minimal")
+                raise TapeError("Tape is full. Load a new/recyclable tape and start the backup again.")
             elif dd_err_out:
                 append_backup_log(f"dd error (rc={dd_rc}): {dd_err_out[:300]}", level="minimal")
                 raise TapeError(f"dd write to tape failed (rc={dd_rc}): {dd_err_out[:200]}")
