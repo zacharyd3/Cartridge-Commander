@@ -36,6 +36,7 @@ TAPE_BLOCK_BYTES     = int(os.getenv("TL_TAPE_BLOCK_KB", "512")) * 1024   # phys
 AUTO_REWIND_AFTER    = os.getenv("AUTO_REWIND_AFTER_BACKUP","true").lower() == "true"
 ERASE_BEFORE_BACKUP  = os.getenv("ERASE_BEFORE_BACKUP",   "false").lower() == "true"
 TAPE_INDEX_DIR       = os.getenv("TAPE_INDEX_DIR",        "/var/lib/tl2000/index")
+ICON_PATH            = os.getenv("ICON_PATH",             "/var/lib/tl2000/icon.png")
 SCHEDULES_FILE       = os.getenv("SCHEDULES_FILE",        "/var/lib/tl2000/schedules.json")
 RESTORE_ROOT         = os.getenv("RESTORE_ROOT",          "/mnt/restore")
 # Pattern for the default restore sub-folder.  Tokens: {volume} {date} {datetime} {tape}
@@ -6367,7 +6368,7 @@ def healthz():
 @app.get("/icon.png")
 @app.get("/favicon.ico")
 def serve_icon():
-    return send_from_directory(os.path.dirname(os.path.abspath(__file__)), "icon.png",
+    return send_from_directory(os.path.dirname(ICON_PATH), os.path.basename(ICON_PATH),
                                mimetype="image/png")
 
 @app.get("/")
@@ -6386,7 +6387,7 @@ HTML_PAGE = r'''<!doctype html>
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>TL2000</title>
+<title>Cartridge Commander</title>
 <link rel="icon" type="image/png" href="/icon.png"/>
 <link rel="shortcut icon" href="/icon.png"/>
 <link rel="apple-touch-icon" href="/icon.png"/>
@@ -6657,7 +6658,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px;}
 
 <!-- TOP BAR -->
 <div id="topbar">
-  <h1><span>📼</span>TL2000</h1>
+  <h1><span>📼</span>Cartridge Commander</h1>
   <div class="topbar-right">
     <div class="status-chip"><div class="dot" id="dot-drive"></div><span id="lbl-loaded">—</span></div>
     <div class="status-chip" id="lbl-updated" style="display:none;font-size:11px;color:var(--dim)"></div>
