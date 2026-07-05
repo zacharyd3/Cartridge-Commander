@@ -90,6 +90,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 .btn:hover:not(:disabled){border-color:rgba(59,130,246,.6);background:var(--surf3);}
 .btn:active:not(:disabled){transform:scale(.97);}
 .btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn:focus-visible{outline:2px solid var(--blue);outline-offset:1px;}
 .btn.primary{background:var(--blue);border-color:transparent;color:#fff;}
 .btn.primary:hover:not(:disabled){background:#2563eb;}
 .btn.danger{background:var(--red);border-color:transparent;color:#fff;}
@@ -2279,7 +2280,7 @@ async function loadSchedules(){
         <div class="sched-when mono" style="font-size:10px;">${(s.paths||[]).join(', ')}</div>
       </div>
       <label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSched('${s.id}',this.checked)"/><div class="toggle-track"></div></label>
-      <button class="btn sm danger" onclick="deleteSched('${s.id}')">🗑</button>`;
+      <button class="btn sm danger" onclick="deleteSched('${s.id}')" aria-label="Delete schedule" title="Delete schedule">🗑</button>`;
     card.appendChild(item);
   }
 }
@@ -2439,7 +2440,7 @@ function renderSettingsPage(c){
                 style="flex:1;font-family:ui-monospace,monospace;font-size:12px;resize:vertical;
                        background:var(--surf2);border:1px solid rgba(255,255,255,.1);border-radius:8px;
                        color:var(--text);padding:8px 10px;"></textarea>
-              <button class="btn sm" onclick="resetTemplate('${k}')" title="Reset to default" style="flex-shrink:0;margin-top:1px;">↺</button>
+              <button class="btn sm" onclick="resetTemplate('${k}')" title="Reset to default" aria-label="Reset to default" style="flex-shrink:0;margin-top:1px;">↺</button>
             </div>
           </div>`).join('')}
         <div class="btn-row" style="margin-top:4px;">
