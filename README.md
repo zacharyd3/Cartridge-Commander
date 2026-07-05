@@ -112,6 +112,8 @@ symlinks instead of raw `/dev/sgN` paths.
 | `MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`, `MQTT_PASS` | MQTT broker for Home Assistant discovery |
 | `HA_URL`, `HA_TOKEN` | Home Assistant notifications (long-lived token) |
 | `TL_POLL_SECONDS` | how often the UI polls changer/drive status |
+| `ICON_PATH` | favicon/page icon served at `/icon.png` (default `/var/lib/tl2000/icon.png`) |
+| `STARTUP_QUICK_SCAN` | run a quick barcode scan on container start so present tapes don't show as archived (default `true`) |
 
 See the top of `app.py` for the full list of tunables (GFS retention,
 verify sampling, pre/post-backup hooks, etc.) — every one is an
