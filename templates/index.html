@@ -11,14 +11,26 @@
 /* ── Reset / tokens ─────────────────────────────────────────────────────── */
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
 :root{
-  --bg:#080f1e;--surf:#111827;--surf2:#1a2540;--surf3:#223060;
+  --bg:#080f1e;--surf:#111827;--surf2:rgba(255,255,255,.05);--surf3:rgba(255,255,255,.09);
   --text:#e8f0ff;--muted:#7a93c0;--dim:#3a4f7a;
   --green:#22c55e;--amber:#f59e0b;--red:#ef4444;--blue:#3b82f6;--purple:#a855f7;
   --radius:16px;--radius-sm:10px;
   --shadow:0 8px 32px rgba(0,0,0,.45);
+  --glass-bg:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,0) 40%),rgba(26,37,64,.55);
+  --glass-bg2:rgba(255,255,255,.045);
+  --glass-border:rgba(255,255,255,.1);
+  --glass-blur:blur(20px) saturate(150%);
 }
-html,body{height:100%;background:var(--bg);color:var(--text);
+html,body{height:100%;color:var(--text);
   font-family:Inter,system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5;}
+body{
+  background:
+    radial-gradient(1100px 700px at 12% -8%, rgba(59,130,246,.30), transparent 60%),
+    radial-gradient(900px 700px at 108% 6%, rgba(168,85,247,.20), transparent 55%),
+    radial-gradient(900px 650px at 45% 115%, rgba(34,197,94,.14), transparent 55%),
+    var(--bg);
+  background-attachment:fixed;
+}
 
 /* ── Shell layout ───────────────────────────────────────────────────────── */
 #app{display:flex;flex-direction:column;height:100%;max-height:100dvh;}
@@ -26,7 +38,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 /* Top bar */
 #topbar{
   display:flex;align-items:center;justify-content:space-between;
-  padding:10px 14px;background:var(--surf);border-bottom:1px solid rgba(255,255,255,.07);
+  padding:10px 14px;background:rgba(17,24,39,.6);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);
+  border-bottom:1px solid var(--glass-border);
   flex-shrink:0;gap:8px;
 }
 #topbar h1{font-size:17px;font-weight:700;display:flex;align-items:center;gap:6px;white-space:nowrap;}
@@ -43,7 +56,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 
 /* Bottom nav */
 #nav{
-  display:flex;background:var(--surf);border-top:1px solid rgba(255,255,255,.07);
+  display:flex;background:rgba(17,24,39,.6);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);
+  border-top:1px solid var(--glass-border);
   flex-shrink:0;safe-area-inset-bottom:env(safe-area-inset-bottom);
 }
 .nav-btn{
@@ -56,8 +70,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 .nav-btn.active{color:var(--blue);border-top-color:var(--blue);}
 
 /* ── Cards ──────────────────────────────────────────────────────────────── */
-.card{background:var(--surf);border:1px solid rgba(255,255,255,.07);
-      border-radius:var(--radius);padding:14px;box-shadow:var(--shadow);}
+.card{background:var(--glass-bg);border:1px solid var(--glass-border);
+      backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);
+      border-radius:var(--radius);padding:14px;
+      box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.06);}
 .card-title{font-size:13px;font-weight:700;color:var(--muted);
             text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;
             display:flex;align-items:center;justify-content:space-between;}
@@ -83,11 +99,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 
 /* ── Buttons ────────────────────────────────────────────────────────────── */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
-     border:1px solid rgba(255,255,255,.12);border-radius:var(--radius-sm);
-     background:var(--surf2);color:var(--text);padding:9px 14px;font-size:13px;
+     border:1px solid var(--glass-border);border-radius:var(--radius-sm);
+     background:var(--glass-bg2);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+     color:var(--text);padding:9px 14px;font-size:13px;
      font-weight:500;cursor:pointer;transition:border-color .15s,background .15s;
      white-space:nowrap;-webkit-user-select:none;user-select:none;}
-.btn:hover:not(:disabled){border-color:rgba(59,130,246,.6);background:var(--surf3);}
+.btn:hover:not(:disabled){border-color:rgba(59,130,246,.6);background:rgba(59,130,246,.12);}
 .btn:active:not(:disabled){transform:scale(.97);}
 .btn:disabled{opacity:.4;cursor:not-allowed;}
 .btn:focus-visible{outline:2px solid var(--blue);outline-offset:1px;}
@@ -102,11 +119,13 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 
 /* ── Inputs / selects ───────────────────────────────────────────────────── */
 input,select,textarea{
-  width:100%;background:var(--surf2);color:var(--text);
-  border:1px solid rgba(255,255,255,.12);border-radius:var(--radius-sm);
+  width:100%;background:var(--glass-bg2);color:var(--text);
+  border:1px solid var(--glass-border);border-radius:var(--radius-sm);
   padding:9px 12px;font-size:13px;font-family:inherit;
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
 }
 input:focus,select:focus{outline:2px solid var(--blue);outline-offset:1px;}
+input[type=radio],input[type=checkbox]{width:auto;accent-color:var(--blue);backdrop-filter:none;}
 label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px;}
 .form-group{margin-bottom:10px;}
 
@@ -190,7 +209,9 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px;}
 }
 .drawer-overlay.open{display:flex;}
 .drawer{
-  width:100%;max-height:88dvh;background:var(--surf);
+  width:100%;max-height:88dvh;background:var(--glass-bg);
+  backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);
+  border:1px solid var(--glass-border);border-bottom:none;
   border-radius:20px 20px 0 0;padding:16px;overflow-y:auto;
   animation:slideUp .2s ease;
 }
@@ -201,7 +222,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px;}
 /* on wider screens use a centered modal instead */
 @media(min-width:640px){
   .drawer-overlay{align-items:center;justify-content:center;}
-  .drawer{max-width:600px;border-radius:20px;max-height:85dvh;}
+  .drawer{max-width:600px;border-radius:20px;max-height:85dvh;border-bottom:1px solid var(--glass-border);}
   .drawer-handle{display:none;}
 }
 /* large screens — give the modal real estate and let file lists breathe */
@@ -268,6 +289,35 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px;}
 /* restore path tree */
 .restore-sel-wrap{background:var(--surf2);border-radius:var(--radius-sm);padding:10px;margin-top:8px;}
 .restore-sel-label{font-size:11px;color:var(--muted);margin-bottom:6px;}
+/* backup session picker */
+.sess-picker-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;}
+.sess-options{display:flex;flex-direction:column;gap:6px;}
+.sess-opt{
+  display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  background:rgba(255,255,255,.035);border:1px solid var(--glass-border);
+  border-radius:var(--radius-sm);padding:9px 12px;font:inherit;color:var(--text);
+  cursor:pointer;-webkit-user-select:none;user-select:none;
+  transition:background .15s,border-color .15s,box-shadow .15s;
+}
+.sess-opt:hover{border-color:rgba(59,130,246,.45);background:rgba(59,130,246,.08);}
+.sess-opt.active{
+  border-color:rgba(59,130,246,.7);background:rgba(59,130,246,.14);
+  box-shadow:0 0 0 1px rgba(59,130,246,.25),0 4px 16px rgba(59,130,246,.18);
+}
+.sess-opt-dot{
+  width:15px;height:15px;border-radius:50%;flex-shrink:0;
+  border:2px solid var(--dim);transition:border-color .15s,background .15s,box-shadow .15s;
+}
+.sess-opt.active .sess-opt-dot{
+  border-color:var(--blue);background:var(--blue);
+  box-shadow:inset 0 0 0 2px rgba(8,15,30,.9);
+}
+.sess-opt-icon{font-size:14px;flex-shrink:0;}
+.sess-opt-name{font-family:ui-monospace,monospace;font-size:11px;flex:1;min-width:0;
+               overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sess-opt-badge{flex-shrink:0;font-size:9px;font-weight:700;text-transform:uppercase;
+                 letter-spacing:.04em;color:var(--green);background:rgba(34,197,94,.15);
+                 border:1px solid rgba(34,197,94,.3);border-radius:6px;padding:2px 6px;}
 </style>
 </head>
 <body>
@@ -1748,7 +1798,7 @@ function renderRestorePage(c){
 
   // Session picker — shown when tape has multiple backup sessions
   const sessPick = el('div'); sessPick.id='restore-session-picker';
-  sessPick.style.cssText='margin-top:8px;display:none;background:var(--surf2);border-radius:10px;padding:8px 12px;';
+  sessPick.style.cssText='margin-top:8px;display:none;';
   pickCard.appendChild(sessPick);
 
   const meta = el('div','text-sm text-muted mt8'); meta.id='restore-file-meta'; pickCard.appendChild(meta);
@@ -1822,13 +1872,25 @@ async function loadRestoreIndex(vol, silent){
   if(sessContainer){
     if(sessions.length > 1){
       sessContainer.style.display='';
-      sessContainer.innerHTML = `<div class="text-sm text-muted" style="margin-bottom:4px;">Backup session:</div>`
-        + sessions.map((s,i)=>`<label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer;">
-            <input type="radio" name="restore-session" value="${s}" ${i===sessions.length-1?'checked':''} onchange="navigateRestoreSession(this.value)"/>
-            <span class="mono" style="font-size:11px;">📁 ${s}/</span>
-          </label>`).join('');
+      const latestIdx = sessions.length-1;
+      sessContainer.innerHTML = `<div class="sess-picker-label">Backup session</div>`
+        + `<div class="sess-options">`
+        + sessions.map((s,i)=>`<button type="button" class="sess-opt${i===latestIdx?' active':''}" data-session="${s}">
+            <span class="sess-opt-dot"></span>
+            <span class="sess-opt-icon">📁</span>
+            <span class="sess-opt-name">${s}/</span>
+            ${i===latestIdx?'<span class="sess-opt-badge">Latest</span>':''}
+          </button>`).join('')
+        + `</div>`;
+      sessContainer.querySelectorAll('.sess-opt').forEach(btn=>{
+        btn.onclick = () => {
+          sessContainer.querySelectorAll('.sess-opt').forEach(b=>b.classList.remove('active'));
+          btn.classList.add('active');
+          navigateRestoreSession(btn.dataset.session);
+        };
+      });
       // Auto-navigate into the most recent session
-      navigateRestoreIntoDir(sessions[sessions.length-1] + '/');
+      navigateRestoreIntoDir(sessions[latestIdx] + '/');
       return;
     } else {
       sessContainer.style.display='none';
@@ -3164,14 +3226,15 @@ async function openTapeDrawer(info){
         const ordered = [...sessions].reverse();
         switchEl.innerHTML = ordered.map(s => {
           const isActive = s === currentSession;
-          const dateStr = s.replace(/^[^_]+_/, '').replace(/_/g,' ');
-          return `<button
-            class="btn sm${isActive ? ' primary' : ''}"
-            style="width:100%;text-align:left;font-family:ui-monospace,monospace;font-size:11px;padding:5px 10px;${isActive?'':'opacity:.75;'}"
-            onclick="switchTapeSession('${s}')">
-            ${isActive ? '▶ ' : ''}📁 ${s}
+          return `<button type="button" class="sess-opt${isActive ? ' active' : ''}" data-session="${s}">
+            <span class="sess-opt-dot"></span>
+            <span class="sess-opt-icon">📁</span>
+            <span class="sess-opt-name">${s}</span>
           </button>`;
         }).join('');
+        switchEl.querySelectorAll('.sess-opt').forEach(btn => {
+          btn.onclick = () => switchTapeSession(btn.dataset.session);
+        });
       } else if(sessions.length === 1 && single && nameEl){
         // Single session: just a small label
         banner && (banner.style.display = 'none');
@@ -3242,17 +3305,11 @@ function getTreeNode(tree, cwdPath){
 
 function switchTapeSession(sessionName){
   G.tdCwd = sessionName + '/';
-  // Update button active states in the session picker
+  // Update active state in the session picker
   const switchEl = $('td-session-switch');
   if(switchEl){
-    [...switchEl.querySelectorAll('button')].forEach(b => {
-      // Extract session name from button — strip leading ▶ / 📁 decorations
-      const raw = b.textContent.replace(/^[\s▶📁]+/, '').trim();
-      const isActive = raw === sessionName;
-      b.className = 'btn sm' + (isActive ? ' primary' : '');
-      b.style.opacity = isActive ? '1' : '.75';
-      // Rebuild inner text cleanly
-      b.textContent = (isActive ? '▶ ' : '') + '📁 ' + raw;
+    switchEl.querySelectorAll('.sess-opt').forEach(b => {
+      b.classList.toggle('active', b.dataset.session === sessionName);
     });
   }
   $('td-search').value = '';
