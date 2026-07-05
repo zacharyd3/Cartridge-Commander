@@ -1,4 +1,5 @@
 import os
+import hmac
 import fcntl
 import re
 import json
@@ -34,6 +35,7 @@ BACKUP_ROOT          = os.getenv("BACKUP_ROOT",           "/mnt/user")
 BACKUP_CHUNK_SIZE    = int(os.getenv("BACKUP_CHUNK_SIZE", str(1024*1024)))
 TAPE_BLOCK_BYTES     = int(os.getenv("TL_TAPE_BLOCK_KB", "512")) * 1024   # physical tape block size, default 512 KiB
 AUTO_REWIND_AFTER    = os.getenv("AUTO_REWIND_AFTER_BACKUP","true").lower() == "true"
+STARTUP_QUICK_SCAN   = os.getenv("STARTUP_QUICK_SCAN",     "true").lower() == "true"
 ERASE_BEFORE_BACKUP  = os.getenv("ERASE_BEFORE_BACKUP",   "false").lower() == "true"
 TAPE_INDEX_DIR       = os.getenv("TAPE_INDEX_DIR",        "/var/lib/tl2000/index")
 ICON_PATH            = os.getenv("ICON_PATH",             "/var/lib/tl2000/icon.png")
@@ -1306,14 +1308,6 @@ def list_restore_directories(path=None):
     files.sort(key=lambda x: x["name"].lower())
     parent = None if os.path.realpath(base)==os.path.realpath(RESTORE_ROOT) else os.path.dirname(base)
     return {"root": RESTORE_ROOT, "current": base, "parent": parent, "directories": dirs, "files": files}
-
-
-def run_shell_cmd(command: str, timeout=None):
-    timeout = timeout or COMMAND_TIMEOUT
-    proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
-    if proc.returncode != 0:
-        raise TapeError((proc.stderr or proc.stdout or "Command failed").strip())
-    return proc.stdout.strip()
 
 
 def get_cleaning_slot() -> Optional[int]:
@@ -5353,7 +5347,7 @@ def mqtt_loop():
 
 def require_password():
     if not WEBUI_PASSWORD: return None
-    if request.headers.get("X-API-Key","") != WEBUI_PASSWORD:
+    if not hmac.compare_digest(request.headers.get("X-API-Key",""), WEBUI_PASSWORD):
         return jsonify({"ok":False,"error":"Unauthorized"}), 401
     return None
 
@@ -5674,6 +5668,8 @@ def api_tape_index_reindex():
 
 @app.post("/api/load")
 def api_load():
+    auth = require_password()
+    if auth is not None: return auth
     p = request.get_json(silent=True) or {}
     slot = int(p.get("slot", 0))
     if slot <= 0:
@@ -5726,6 +5722,8 @@ def api_load():
 
 @app.post("/api/unload")
 def api_unload():
+    auth = require_password()
+    if auth is not None: return auth
     p = request.get_json(silent=True) or {}
     slot = int(p.get("slot", 0))
     if slot <= 0:
@@ -10095,4 +10093,9 @@ if __name__ == "__main__":
     if mqtt_available():
         threading.Thread(target=mqtt_loop, daemon=True).start()
     threading.Thread(target=scheduler_loop, daemon=True).start()
+    if STARTUP_QUICK_SCAN and CHANGER:
+        # Reconcile the catalog against the actual slot contents on boot so tapes that
+        # are physically present don't show as "archived" just because the container
+        # restarted since the last manual scan.
+        threading.Thread(target=inventory_worker, kwargs={"mode": "quick"}, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT","8080")), debug=False)
