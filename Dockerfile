@@ -20,7 +20,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+COPY cartridge_commander/ cartridge_commander/
 COPY templates/ templates/
+COPY static/ static/
 
 RUN mkdir -p /var/lib/tl2000 /mnt/user /mnt/restore
 
