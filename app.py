@@ -6130,14 +6130,19 @@ def api_schedules_update(sid):
     auth = require_password()
     if auth is not None: return auth
     p = request.get_json(silent=True) or {}
+    found = None
     with _schedules_lock:
         for s in _schedules:
             if s["id"] == sid:
                 for k in ["label","paths","mode","hour","minute","day_of_week","day_of_month","enabled"]:
                     if k in p: s[k] = p[k]
-                _update_next_run(s); _save_schedules()
-                return jsonify({"ok":True,"schedule":s})
-    return jsonify({"ok":False,"error":"Not found."}), 404
+                _update_next_run(s)
+                found = s
+                break
+    if found is None:
+        return jsonify({"ok":False,"error":"Not found."}), 404
+    _save_schedules()
+    return jsonify({"ok":True,"schedule":found})
 
 @app.delete("/api/schedules/<sid>")
 def api_schedules_delete(sid):
