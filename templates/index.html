@@ -21,7 +21,7 @@
   --glass-border:rgba(255,255,255,.1);
   --glass-blur:blur(20px) saturate(150%);
 }
-html,body{height:100%;color:var(--text);
+html,body{height:100%;color:var(--text);color-scheme:dark;
   font-family:Inter,system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5;}
 body{
   background:
@@ -125,6 +125,7 @@ input,select,textarea{
   backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
 }
 input:focus,select:focus{outline:2px solid var(--blue);outline-offset:1px;}
+select option{background:var(--surf);color:var(--text);}
 input[type=radio],input[type=checkbox]{width:auto;accent-color:var(--blue);backdrop-filter:none;}
 label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px;}
 .form-group{margin-bottom:10px;}
@@ -2323,12 +2324,14 @@ function schedBrowseRoot(){ schedBrowse('{{ backup_root }}'); }
 async function loadSchedules(){
   const data=await api('/api/schedules');
   if(!data.ok) return;
+  G.schedules = data.schedules||[];
   const card=$('sched-list-card'); if(!card) return;
   card.innerHTML='<div class="card-title">Scheduled Backups</div>';
   const DOW=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
   if(!(data.schedules||[]).length){
     card.innerHTML+='<div class="empty-state">No schedules yet.</div>'; return;
   }
+  const backupRunning = !!G.state?.backup_job?.running;
   for(const s of data.schedules){
     let when='';
     if(s.mode==='daily') when=`Daily at ${String(s.hour).padStart(2,'0')}:${String(s.minute).padStart(2,'0')}`;
@@ -2342,6 +2345,7 @@ async function loadSchedules(){
         <div class="sched-when mono" style="font-size:10px;">${(s.paths||[]).join(', ')}</div>
       </div>
       <label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSched('${s.id}',this.checked)"/><div class="toggle-track"></div></label>
+      <button class="btn sm primary" onclick="runSchedNow('${s.id}')" ${backupRunning?'disabled':''} aria-label="Run schedule now" title="${backupRunning?'A backup is already running':'Run this schedule now'}">▶ Run Now</button>
       <button class="btn sm danger" onclick="deleteSched('${s.id}')" aria-label="Delete schedule" title="Delete schedule">🗑</button>`;
     card.appendChild(item);
   }
@@ -2371,6 +2375,62 @@ async function createSchedule(){
 }
 async function toggleSched(id,enabled){ await api(`/api/schedules/${id}`,'PUT',{enabled}); loadSchedules(); }
 async function deleteSched(id){ if(!confirm('Delete this schedule?')) return; await api(`/api/schedules/${id}`,'DELETE'); loadSchedules(); }
+
+async function runSchedNow(id){
+  const s=(G.schedules||[]).find(x=>x.id===id);
+  if(!s) return;
+  if(G.state?.backup_job?.running){ alert('A backup is already running.'); return; }
+  if(!confirm(`Run "${s.label||'this schedule'}" now?`)) return;
+
+  // Optimistically update backup_job state and jump to the Backup page,
+  // mirroring startBackup() so the user sees activity immediately.
+  if(G.state) G.state.backup_job = {
+    ...G.state.backup_job,
+    running: true,
+    status: 'selecting_tape',
+    last_message: 'Starting backup — selecting tape…',
+    percent: 0, bytes_written: 0, speed_bps: 0, eta_seconds: null,
+  };
+  G.page = 'backup';
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  $('nav-backup')?.classList.add('active');
+  renderPage();
+
+  const data=await api('/api/backup/start','POST',{paths:s.paths, mode:s.mode, label:s.label});
+
+  if(!data.ok){
+    if(G.state) G.state.backup_job = {...G.state.backup_job, running:false, status:'idle'};
+    if((data.error||'').toLowerCase().includes('already running')){
+      await pollOnce();
+    } else {
+      if(G.state) G.state.backup_job = {
+        ...G.state.backup_job,
+        status:'failed',
+        last_message:data.error||'Failed to start backup',
+        error:data.error||'Failed to start backup',
+      };
+      renderPage();
+      await pollOnce();
+    }
+    return;
+  }
+
+  if(data.backup_job && G.state) G.state.backup_job = data.backup_job;
+  renderPage();
+
+  const prepPhases=new Set(['preparing','selecting_tape','loading_tape','pre_hook','erasing']);
+  let rapidPollCount=0;
+  const rapidPoll=async()=>{
+    await pollOnce();
+    const status=G.state?.backup_job?.status||'idle';
+    const running=G.state?.backup_job?.running;
+    if(running && prepPhases.has(status) && rapidPollCount<60){
+      rapidPollCount++;
+      setTimeout(rapidPoll,2000);
+    }
+  };
+  setTimeout(rapidPoll,1500);
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // LOG PAGE
