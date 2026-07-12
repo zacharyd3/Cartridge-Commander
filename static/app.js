@@ -2191,6 +2191,12 @@ function renderSettingsPage(c){
         Example — <span class="mono">daily 7 / weekly 4 / monthly 6</span>: dense coverage for the last
         week, one tape per week for a month, one per month for half a year. Set a tier to <span class="mono">0</span> to disable it.
       </div>
+      <div style="margin-top:8px;">
+        Retention is tracked <strong>per job</strong>: each scheduled backup (by its label) keeps its own
+        daily/weekly/monthly history, so a "photos" job and an "appdata" job don't compete for the same
+        slots. Ad-hoc backups run without a label share one pool. The stream each backup belongs to is
+        shown in the classification list below.
+      </div>
     </div>
     <div class="stats cols3" style="margin-bottom:10px;">
       <div class="form-group" style="margin:0;">
@@ -2615,6 +2621,7 @@ async function loadGfsStatus(){
       const colour=cls2==='monthly'?'green':cls2==='weekly'?'blue':cls2==='daily'?'':'red';
       html+=`<div class="file-row"><span class="badge ${colour}" style="width:60px;text-align:center;">${cls2}</span>
         <span class="mono" style="font-size:11px;">${r.volume_tag||'—'}</span>
+        <span class="badge" style="opacity:.75;" title="Retention stream (job)">${r.stream||'—'}</span>
         <span class="text-muted text-sm">${fmtAgo(r.started_at)}</span>
         <span class="badge ${r.status==='completed'?'green':'red'}">${r.status}</span></div>`;
     }

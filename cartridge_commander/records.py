@@ -129,43 +129,85 @@ def _last_n(seq: List[str], n: int) -> List[str]:
     return list(seq[-n:]) if n > 0 else []
 
 
+def gfs_stream_key(record: Dict[str, Any]) -> str:
+    """Return the retention stream a record belongs to.
+
+    Retention is applied independently per job so that separate schedules
+    (e.g. a Monday "appdata" job and a Friday "photos" job) each keep their own
+    daily/weekly/monthly history instead of competing for shared slots.
+
+    Scheduled jobs carry a stable label (the schedule's name) which is used as
+    the stream key.  Ad-hoc backups started without a label are stored with an
+    auto-generated job id of ``{volume_tag}_{started_at}``; those are collapsed
+    into one shared "" stream so an occasional manual backup doesn't pin a tape
+    forever as the sole member of its own stream.
+    """
+    label = str(record.get("label") or "").strip()
+    started = record.get("started_at")
+    if label and started is not None:
+        vol = record.get("volume_tag") or ""
+        auto_job_id = f"{vol or 'nolabel'}_{int(started)}"
+        if label == auto_job_id:
+            return ""
+    return label
+
+
+def _gfs_completed_streams() -> Dict[str, List[Dict[str, Any]]]:
+    """Completed, tagged backups partitioned by stream key, each chronological."""
+    with shared_state._backup_records_lock:
+        records = sorted(shared_state._backup_records, key=lambda r: r.get("started_at", 0))
+    streams: Dict[str, List[Dict[str, Any]]] = {}
+    for rec in records:
+        if rec.get("status") == "completed" and rec.get("started_at") and rec.get("volume_tag"):
+            streams.setdefault(gfs_stream_key(rec), []).append(rec)
+    return streams
+
+
+def _gfs_stream_keep(stream: List[Dict[str, Any]], cfg: Dict[str, int]):
+    """Return (monthly, weekly, daily) kept volume-tag sets for a single stream.
+
+    ``stream`` must be in chronological order.  Each tier keeps the oldest
+    backup per calendar window (month / ISO week), and daily keeps the most
+    recent N backups in this stream.
+    """
+    monthly_rep: Dict[str, str] = {}   # "YYYY-MM" → volume_tag of oldest record
+    weekly_rep:  Dict[str, str] = {}   # "YYYY-WW" → volume_tag of oldest record
+    for rec in stream:
+        dt = datetime.datetime.fromtimestamp(rec["started_at"])
+        vol = rec["volume_tag"]
+        ym_key = dt.strftime("%Y-%m")
+        if ym_key not in monthly_rep:
+            monthly_rep[ym_key] = vol
+        iso_year, iso_week, _ = dt.isocalendar()
+        yw_key = f"{iso_year}-{iso_week:02d}"
+        if yw_key not in weekly_rep:
+            weekly_rep[yw_key] = vol
+
+    keep_monthly = set(_last_n(list(monthly_rep.values()), cfg["monthly"]))
+    keep_weekly  = set(_last_n(list(weekly_rep.values()),  cfg["weekly"]))
+    recent_vols  = [r["volume_tag"] for r in reversed(stream)]
+    keep_daily   = set(recent_vols[:cfg["daily"]])
+    return keep_monthly, keep_weekly, keep_daily
+
+
 def gfs_classify(record: Dict[str, Any]) -> str:
     """Classify a backup record for display purposes.
 
-    Uses calendar windows (month / ISO week) rather than weekday checks so
-    the classification is stable regardless of which day backups run.
+    Classification is done within the record's own retention stream, using
+    calendar windows (month / ISO week) rather than weekday checks so it stays
+    stable regardless of which day backups run.
     """
     ts = record.get("started_at")
     if not ts:
         return "expired"
-    dt = datetime.datetime.fromtimestamp(ts)
 
-    # Check against the keep sets from gfs_get_recyclable
-    recyclable_set = set(gfs_get_recyclable())
     vol = record.get("volume_tag", "")
+    recyclable_set = set(gfs_get_recyclable())
 
     if vol and vol not in recyclable_set and record.get("status") == "completed":
-        # Determine which bucket is keeping it
-        with shared_state._backup_records_lock:
-            records = sorted(shared_state._backup_records, key=lambda r: r.get("started_at", 0))
-        completed = [r for r in records if r.get("status") == "completed" and r.get("started_at") and r.get("volume_tag")]
-
-        monthly_rep: Dict[str, str] = {}
-        weekly_rep:  Dict[str, str] = {}
-        for rec in completed:
-            dt2 = datetime.datetime.fromtimestamp(rec["started_at"])
-            ym = dt2.strftime("%Y-%m")
-            if ym not in monthly_rep:
-                monthly_rep[ym] = rec["volume_tag"]
-            iso_year, iso_week, _ = dt2.isocalendar()
-            yw = f"{iso_year}-{iso_week:02d}"
-            if yw not in weekly_rep:
-                weekly_rep[yw] = rec["volume_tag"]
-
         cfg = get_gfs_config()
-        keep_monthly = set(_last_n(list(monthly_rep.values()), cfg["monthly"]))
-        keep_weekly  = set(_last_n(list(weekly_rep.values()),  cfg["weekly"]))
-
+        stream = _gfs_completed_streams().get(gfs_stream_key(record), [])
+        keep_monthly, keep_weekly, _keep_daily = _gfs_stream_keep(stream, cfg)
         if vol in keep_monthly:
             return "monthly"
         if vol in keep_weekly:
@@ -178,55 +220,35 @@ def gfs_classify(record: Dict[str, Any]) -> str:
 def gfs_get_recyclable() -> List[str]:
     """Apply GFS retention and return volume_tags safe to reuse.
 
-    The keep counts come from the runtime GFS config (get_gfs_config), which
-    seeds from the GFS_*_KEEP env vars but is editable/persisted from the UI.
+    Retention runs independently per job stream (see ``gfs_stream_key``) so
+    separate schedules each keep their own history.  The keep counts come from
+    the runtime GFS config (get_gfs_config), which seeds from the GFS_*_KEEP env
+    vars but is editable/persisted from the UI.  Within each stream it keeps:
 
-    Keeps:
       - The oldest completed backup in each of the last ``monthly`` calendar months.
-      - The oldest completed backup in each of the last ``weekly`` ISO weeks
-        (that aren't already kept as a monthly).
-      - The most recent ``daily`` completed backups (that aren't already kept).
+      - The oldest completed backup in each of the last ``weekly`` ISO weeks.
+      - The most recent ``daily`` completed backups.
 
-    Everything older than the above windows, and not in a keep set, is recyclable.
+    A tape is recyclable only when it is kept by *no* stream, so a tape shared
+    between jobs is retained as long as any one job still needs it.
     """
-    with shared_state._backup_records_lock:
-        records = sorted(shared_state._backup_records, key=lambda r: r.get("started_at", 0))
-
-    completed = [r for r in records if r.get("status") == "completed" and r.get("started_at") and r.get("volume_tag")]
-
-    # Group by year-month and ISO year-week, keeping oldest per window
-    monthly_rep: Dict[str, str] = {}   # "YYYY-MM"   → volume_tag of oldest record
-    weekly_rep:  Dict[str, str] = {}   # "YYYY-WW"   → volume_tag of oldest record
-
-    for rec in completed:
-        dt = datetime.datetime.fromtimestamp(rec["started_at"])
-        vol = rec["volume_tag"]
-
-        ym_key = dt.strftime("%Y-%m")
-        if ym_key not in monthly_rep:
-            monthly_rep[ym_key] = vol
-
-        iso_year, iso_week, _ = dt.isocalendar()
-        yw_key = f"{iso_year}-{iso_week:02d}"
-        if yw_key not in weekly_rep:
-            weekly_rep[yw_key] = vol
-
-    # Trim to the configured keep counts (most recent N windows)
     cfg = get_gfs_config()
-    keep_monthly: set = set(_last_n(list(monthly_rep.values()), cfg["monthly"]))
-    keep_weekly:  set = set(_last_n(list(weekly_rep.values()),  cfg["weekly"]))
+    streams = _gfs_completed_streams()
 
-    # Daily: the most recent N completed backups overall
-    recent_vols = [r["volume_tag"] for r in reversed(completed)]
-    keep_daily: set = set(recent_vols[:cfg["daily"]])
+    keep_all: set = set()
+    for stream in streams.values():
+        keep_monthly, keep_weekly, keep_daily = _gfs_stream_keep(stream, cfg)
+        keep_all |= keep_monthly | keep_weekly | keep_daily
 
-    keep_all = keep_monthly | keep_weekly | keep_daily
-
-    # Any volume not in keep_all whose most recent completed backup is outside
-    # all keep windows is recyclable.  We de-duplicate and preserve insertion order.
+    # Any tag not kept by any stream is recyclable.  De-duplicate while
+    # preserving chronological (oldest-first) order across all streams.
+    all_completed = sorted(
+        (rec for stream in streams.values() for rec in stream),
+        key=lambda r: r["started_at"],
+    )
     seen: set = set()
     recyclable: List[str] = []
-    for rec in completed:
+    for rec in all_completed:
         vol = rec["volume_tag"]
         if vol not in keep_all and vol not in seen:
             seen.add(vol)

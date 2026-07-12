@@ -17,7 +17,7 @@ from .settings import _NOTIFY_DEFAULT_TEMPLATES, build_restore_dest, get_ha_conf
 from .changer import ensure_under_backup_root, ensure_under_restore_root, get_cleaning_slot, get_mail_slot_info, list_directories, list_restore_directories, refresh_state
 from .db import delete_tape_index, list_all_known_indexes, load_tape_index, mark_tape_archived, read_tape_index_live, save_tape_index, update_tape_index_metadata
 from .drive_history import _save_last_known_loaded_slot, build_loaded_tape_space_info, get_drive_info, get_effective_loaded_slot, space_meta_from_info
-from .records import get_backup_records, get_tape_health, gfs_classify, gfs_get_recyclable
+from .records import get_backup_records, get_tape_health, gfs_classify, gfs_get_recyclable, gfs_stream_key
 from .mqtt import publish_state_to_mqtt
 from .scheduler import _save_schedules, _update_next_run
 from .backup_worker import backup_worker
@@ -872,6 +872,7 @@ def api_gfs_status():
         recs = list(shared_state._backup_records)
     classified = [{"id": r.get("id"), "volume_tag": r.get("volume_tag"),
                    "started_at": r.get("started_at"), "status": r.get("status"),
+                   "stream": gfs_stream_key(r) or "(unlabeled)",
                    "gfs_class": gfs_classify(r)} for r in recs[:200]]
     gfs = get_gfs_config()
     return jsonify({"ok": True, "recyclable": recyclable,
