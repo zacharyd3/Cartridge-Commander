@@ -119,6 +119,11 @@ See the top of `app.py` for the full list of tunables (GFS retention,
 verify sampling, pre/post-backup hooks, etc.) — every one is an
 environment variable with a sane default.
 
+The GFS retention keep counts (`GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`,
+`GFS_MONTHLY_KEEP`) seed the defaults, but they can also be edited and saved
+from the **Settings → GFS Retention Policy** card in the UI; the saved values
+are persisted and take precedence over the env vars.
+
 ### Health check
 
 The image's `HEALTHCHECK` hits `GET /healthz`, which responds immediately

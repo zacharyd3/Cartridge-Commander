@@ -6,7 +6,7 @@ import time
 import datetime
 import threading
 from typing import Any, Dict, Optional
-from .config import HA_NOTIFY_ENABLED, HA_NOTIFY_SERVICE, HA_NOTIFY_TOKEN, HA_NOTIFY_URL, RESTORE_ROOT, RESTORE_SUBFOLDER_PATTERN
+from .config import GFS_DAILY_KEEP, GFS_MONTHLY_KEEP, GFS_WEEKLY_KEEP, HA_NOTIFY_ENABLED, HA_NOTIFY_SERVICE, HA_NOTIFY_TOKEN, HA_NOTIFY_URL, RESTORE_ROOT, RESTORE_SUBFOLDER_PATTERN
 
 
 _restore_subfolder_pattern: str = RESTORE_SUBFOLDER_PATTERN
@@ -121,6 +121,57 @@ def _load_notify_config() -> None:
                 for k, v in data["templates"].items():
                     if k in _NOTIFY_DEFAULT_TEMPLATES and isinstance(v, str) and v.strip():
                         _notify_config["templates"][k] = v.strip()
+
+# ---------------------------------------------------------------------------
+# GFS (Grandfather-Father-Son) retention runtime config
+# ---------------------------------------------------------------------------
+# The three "keep" counts control how many backups survive in each rotation
+# tier before a tape becomes recyclable.  They seed from the GFS_*_KEEP env
+# vars but, once saved from the UI, the persisted values win.
+_gfs_config_lock = threading.Lock()
+_gfs_config: Dict[str, int] = {
+    "daily":   GFS_DAILY_KEEP,
+    "weekly":  GFS_WEEKLY_KEEP,
+    "monthly": GFS_MONTHLY_KEEP,
+}
+
+# Sanity ceiling — no rotation tier keeps more than this many windows.
+_GFS_MAX_KEEP = 3650
+
+def _coerce_keep(value: Any, fallback: int) -> int:
+    """Clamp an incoming keep count to a sane non-negative integer."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(0, min(n, _GFS_MAX_KEEP))
+
+def get_gfs_config() -> Dict[str, int]:
+    with _gfs_config_lock:
+        return dict(_gfs_config)
+
+def set_gfs_config(daily: Any = None, weekly: Any = None, monthly: Any = None) -> Dict[str, int]:
+    """Update any subset of the GFS keep counts and persist the result."""
+    from .db import _db_set_json
+    with _gfs_config_lock:
+        if daily is not None:
+            _gfs_config["daily"] = _coerce_keep(daily, _gfs_config["daily"])
+        if weekly is not None:
+            _gfs_config["weekly"] = _coerce_keep(weekly, _gfs_config["weekly"])
+        if monthly is not None:
+            _gfs_config["monthly"] = _coerce_keep(monthly, _gfs_config["monthly"])
+        result = dict(_gfs_config)
+    _db_set_json("gfs_config", result)
+    return result
+
+def _load_gfs_config() -> None:
+    from .db import _db_get_json
+    data = _db_get_json("gfs_config", None)
+    if isinstance(data, dict):
+        with _gfs_config_lock:
+            for k in ("daily", "weekly", "monthly"):
+                if k in data:
+                    _gfs_config[k] = _coerce_keep(data[k], _gfs_config[k])
 
 def _render_notify_template(key: str, **tokens: Any) -> str:
     """Render a notification template key with the given token substitutions."""

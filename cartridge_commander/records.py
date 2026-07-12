@@ -6,7 +6,8 @@ import json
 import datetime
 import subprocess
 from typing import Any, Dict, List, Optional
-from .config import BACKUP_RECORDS_FILE, GFS_DAILY_KEEP, GFS_MONTHLY_KEEP, GFS_WEEKLY_KEEP, SG_DEVICE
+from .config import BACKUP_RECORDS_FILE, SG_DEVICE
+from .settings import get_gfs_config
 from . import state as shared_state
 
 
@@ -119,6 +120,15 @@ def get_tape_health() -> Dict[str, Any]:
 # GFS retention
 # ---------------------------------------------------------------------------
 
+def _last_n(seq: List[str], n: int) -> List[str]:
+    """Return the last ``n`` items, or an empty list when ``n`` <= 0.
+
+    ``seq[-0:]`` is ``seq[0:]`` (the whole list), so a plain negative slice
+    can't express "keep none" — this guards against that.
+    """
+    return list(seq[-n:]) if n > 0 else []
+
+
 def gfs_classify(record: Dict[str, Any]) -> str:
     """Classify a backup record for display purposes.
 
@@ -152,8 +162,9 @@ def gfs_classify(record: Dict[str, Any]) -> str:
             if yw not in weekly_rep:
                 weekly_rep[yw] = rec["volume_tag"]
 
-        keep_monthly = set(list(monthly_rep.values())[-GFS_MONTHLY_KEEP:])
-        keep_weekly  = set(list(weekly_rep.values()) [-GFS_WEEKLY_KEEP:])
+        cfg = get_gfs_config()
+        keep_monthly = set(_last_n(list(monthly_rep.values()), cfg["monthly"]))
+        keep_weekly  = set(_last_n(list(weekly_rep.values()),  cfg["weekly"]))
 
         if vol in keep_monthly:
             return "monthly"
@@ -167,11 +178,14 @@ def gfs_classify(record: Dict[str, Any]) -> str:
 def gfs_get_recyclable() -> List[str]:
     """Apply GFS retention and return volume_tags safe to reuse.
 
+    The keep counts come from the runtime GFS config (get_gfs_config), which
+    seeds from the GFS_*_KEEP env vars but is editable/persisted from the UI.
+
     Keeps:
-      - The oldest completed backup in each of the last GFS_MONTHLY_KEEP calendar months.
-      - The oldest completed backup in each of the last GFS_WEEKLY_KEEP ISO weeks
+      - The oldest completed backup in each of the last ``monthly`` calendar months.
+      - The oldest completed backup in each of the last ``weekly`` ISO weeks
         (that aren't already kept as a monthly).
-      - The most recent GFS_DAILY_KEEP completed backups (that aren't already kept).
+      - The most recent ``daily`` completed backups (that aren't already kept).
 
     Everything older than the above windows, and not in a keep set, is recyclable.
     """
@@ -198,12 +212,13 @@ def gfs_get_recyclable() -> List[str]:
             weekly_rep[yw_key] = vol
 
     # Trim to the configured keep counts (most recent N windows)
-    keep_monthly: set = set(list(monthly_rep.values())[-GFS_MONTHLY_KEEP:])
-    keep_weekly:  set = set(list(weekly_rep.values()) [-GFS_WEEKLY_KEEP:])
+    cfg = get_gfs_config()
+    keep_monthly: set = set(_last_n(list(monthly_rep.values()), cfg["monthly"]))
+    keep_weekly:  set = set(_last_n(list(weekly_rep.values()),  cfg["weekly"]))
 
     # Daily: the most recent N completed backups overall
     recent_vols = [r["volume_tag"] for r in reversed(completed)]
-    keep_daily: set = set(recent_vols[:GFS_DAILY_KEEP])
+    keep_daily: set = set(recent_vols[:cfg["daily"]])
 
     keep_all = keep_monthly | keep_weekly | keep_daily
 
