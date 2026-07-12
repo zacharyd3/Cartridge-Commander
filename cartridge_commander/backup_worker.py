@@ -11,21 +11,31 @@ from .config import AUTO_REWIND_AFTER, AUTO_REWRITE_ON_FULL, BACKUP_LOG_LEVEL_DE
 from . import state as shared_state
 
 
-def _pick_backup_tape() -> Dict[str, Any]:
+def _pick_backup_tape(required_bytes: int = 0) -> Dict[str, Any]:
     """Choose the best available tape to back up to when no tape is loaded.
 
-    Priority order:
-      1. Tape explicitly marked purpose='available' — cleanest choice.
-      2. GFS-recyclable tape (oldest completed backup beyond retention).
-      3. Tape with no backup record at all (never been used).
-      4. Tape with the oldest last_backup timestamp (least recently used).
-    Never picks cleaning tapes.  Raises TapeError if nothing is found.
-    Returns a dict with 'volume_tag' and 'slot'.
+    Selection is capacity-aware: when ``required_bytes`` is given, tapes that
+    can hold the whole pending backup are always preferred over tapes that
+    can't, so a backup is never needlessly split.  Among tapes that fit,
+    ordering depends on the configured fill strategy:
+
+      * ``spread`` (default) — prefer, in order: a tape marked
+        available/recyclable, then a blank/never-used tape, then the
+        least-recently-used written tape.  Round-robins across the library.
+      * ``fill`` — prefer a partially-used tape (most-full first) so one tape
+        is filled before moving on, then available/recyclable, then blank.
+        Handy for pulling a full tape for offsite storage.
+
+    Never picks cleaning tapes.  If ``required_bytes`` is given and no tape can
+    hold the whole backup, raises TapeError (multi-tape spanning is not
+    supported).  Returns a dict with 'volume_tag' and 'slot'.
     """
     from .records import gfs_get_recyclable
     from .db import list_all_known_indexes
-    from .state import TapeError, is_cleaning_volume_tag
+    from .state import TapeError, bytes_human, is_cleaning_volume_tag
     from .changer import refresh_state
+    from .settings import get_tape_fill_strategy
+    strategy = get_tape_fill_strategy()
     state = refresh_state()
     # Build map of slot info keyed by volume_tag for tapes physically present
     slot_map: Dict[str, Dict[str, Any]] = {
@@ -53,6 +63,7 @@ def _pick_backup_tape() -> Dict[str, Any]:
 
     candidates = []
     skipped_full: List[str] = []
+    best_remaining = 0.0     # largest free space seen — for the fail-fast message
     for vol, slot_info in slot_map.items():
         idx     = known.get(vol, {})
         dh      = drive_hist_snap.get(vol, {})
@@ -82,6 +93,16 @@ def _pick_backup_tape() -> Dict[str, Any]:
             skipped_full.append(vol)
             continue
 
+        # Usable free space, using the same 5% headroom as the full check.  An
+        # available/recyclable tape is treated as empty because its contents
+        # will be overwritten.
+        usable = capacity * 0.95
+        remaining = usable if is_available else max(usable - used_bytes, 0.0)
+        best_remaining = max(best_remaining, remaining)
+        # Whether this tape can hold the whole pending backup (spanning is not
+        # supported, so a tape that can't fit it all is a last resort).
+        fits = required_bytes <= 0 or remaining >= float(required_bytes)
+
         # Priority bucket: lower = preferred
         if is_available:
             bucket = 0
@@ -90,12 +111,13 @@ def _pick_backup_tape() -> Dict[str, Any]:
         else:
             bucket = 2
 
-        score = last_bk   # within same bucket, prefer oldest (smallest ts)
         candidates.append({
             "volume_tag": vol,
             "slot":       int(slot_info.get("slot") or 0),
             "bucket":     bucket,
-            "score":      score,
+            "remaining":  remaining,
+            "last_bk":    last_bk,
+            "fits":       fits,
             "purpose":    purpose or "unknown",
         })
 
@@ -114,7 +136,30 @@ def _pick_backup_tape() -> Dict[str, Any]:
             )
         raise TapeError("No suitable backup tape found in the library.")
 
-    candidates.sort(key=lambda x: (x["bucket"], x["score"], x["volume_tag"]))
+    # Fail fast: if we know the backup size and no single tape can hold it all,
+    # stop before writing anything rather than half-filling a tape (multi-tape
+    # spanning is not supported).
+    if required_bytes > 0 and not any(c["fits"] for c in candidates):
+        raise TapeError(
+            f"Backup needs {bytes_human(int(required_bytes))} but no single tape has that "
+            f"much free space (largest free: {bytes_human(int(best_remaining))}). "
+            "Multi-tape spanning is not supported — erase/free a tape, mark one as "
+            "'available', or reduce the selection."
+        )
+
+    def _sort_key(c: Dict[str, Any]):
+        fits_rank = 0 if c["fits"] else 1   # tapes that fit the whole backup win
+        if strategy == "fill":
+            # Concentrate on a tape until full: partially-used tapes first
+            # (most-full = least remaining first), then available/recyclable,
+            # then blank.
+            fill_group = {2: 0, 0: 1, 1: 2}[c["bucket"]]
+            sub = c["remaining"] if c["bucket"] == 2 else c["last_bk"]
+            return (fits_rank, fill_group, sub, c["volume_tag"])
+        # spread (default): available → blank → used, oldest-used first
+        return (fits_rank, c["bucket"], c["last_bk"], c["volume_tag"])
+
+    candidates.sort(key=_sort_key)
     return candidates[0]
 
 
@@ -215,7 +260,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
             set_backup_state(status="selecting_tape", last_message="Selecting tape…")
             publish_state_to_mqtt(refresh_state())
             try:
-                chosen = _pick_backup_tape()
+                chosen = _pick_backup_tape(required_bytes=total_size)
                 append_backup_log(
                     f"Auto-selected {chosen['volume_tag']} from slot {chosen['slot']} "
                     f"(priority: {chosen['purpose']}).", level="minimal"
@@ -233,6 +278,29 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
                 append_backup_log(f"Tape {vol} loaded from slot {chosen['slot']}.", level="minimal")
             except TapeError as e:
                 raise TapeError(f"Could not auto-select a tape: {e}")
+
+        # ── Capacity guard for a manually pre-loaded tape ────────────────────
+        # Auto-selected tapes were already checked by _pick_backup_tape; this
+        # covers the case where the operator loaded a tape by hand.  A tape
+        # that will be erased, or is marked available/recyclable, counts as
+        # empty.  Refuse to start if the backup won't fit (spanning unsupported).
+        if _auto_loaded_slot is None and total_size > 0 and vol and not is_cleaning_volume_tag(vol):
+            from .db import load_tape_index
+            from .records import gfs_get_recyclable as _gfs_recyclable
+            _sinfo = build_tape_space_info(vol)
+            _cap = float(_sinfo.get("capacity_bytes") or 0)
+            if _cap:
+                _purpose = str((load_tape_index(vol) or {}).get("purpose") or "").strip().lower()
+                _treat_empty = (ERASE_BEFORE_BACKUP or _purpose in ("available", "recyclable")
+                                or vol in set(_gfs_recyclable()))
+                _used = 0.0 if _treat_empty else float(_sinfo.get("used_bytes") or 0)
+                _remaining = max(_cap * 0.95 - _used, 0.0)
+                if total_size > _remaining:
+                    raise TapeError(
+                        f"Backup needs {bytes_human(int(total_size))} but loaded tape {vol} only has "
+                        f"{bytes_human(int(_remaining))} free. Multi-tape spanning is not supported — "
+                        "load a larger/empty tape or reduce the selection."
+                    )
 
         # ── Pre-backup hook ──────────────────────────────────────────────────
         if PRE_BACKUP_HOOK:

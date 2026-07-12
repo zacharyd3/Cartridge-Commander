@@ -9,7 +9,7 @@ import threading
 import sqlite3
 from .flaskapp import app
 from .config import CHANGER, INCREMENTAL_DIR, STARTUP_QUICK_SCAN, TAPE_CATALOG_DB, TAPE_INDEX_DIR
-from .settings import _load_gfs_config, _load_ha_config, _load_notify_config, _load_restore_subfolder_pattern
+from .settings import _load_gfs_config, _load_ha_config, _load_notify_config, _load_restore_subfolder_pattern, _load_tape_fill_strategy
 from .changer import refresh_state
 from .db import _load_action_log, db_log, init_tape_catalog, list_all_known_indexes, migrate_legacy_tape_indexes
 from .drive_history import _load_drive_history, _load_last_known_loaded_slot
@@ -41,6 +41,7 @@ def run() -> None:
     _load_ha_config()
     _load_notify_config()
     _load_gfs_config()
+    _load_tape_fill_strategy()
     _load_backup_records()
     _load_action_log()
     refresh_state()
