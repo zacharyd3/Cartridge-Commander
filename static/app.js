@@ -2177,17 +2177,39 @@ function renderSettingsPage(c){
   const gfsCard=el('div','card');
   gfsCard.innerHTML=`
     <div class="card-title">♻️ GFS Retention Policy</div>
+    <div class="text-sm text-muted" style="margin-bottom:10px;line-height:1.5;">
+      Cartridge Commander recycles old tapes using a <strong>Grandfather-Father-Son (GFS)</strong>
+      rotation — a standard backup scheme that keeps recent backups densely and older ones
+      progressively thinned out, so you retain long-term restore points without burning a tape per day.
+      A tape only becomes recyclable once it falls outside <em>all three</em> tiers below.
+      <div style="margin-top:8px;display:grid;gap:4px;">
+        <div><span class="badge">daily</span> — keep the most recent <strong>N</strong> completed backups.</div>
+        <div><span class="badge blue">weekly</span> — additionally keep the oldest backup from each of the last <strong>N</strong> ISO weeks.</div>
+        <div><span class="badge green">monthly</span> — additionally keep the oldest backup from each of the last <strong>N</strong> calendar months.</div>
+      </div>
+      <div style="margin-top:8px;">
+        Example — <span class="mono">daily 7 / weekly 4 / monthly 6</span>: dense coverage for the last
+        week, one tape per week for a month, one per month for half a year. Set a tier to <span class="mono">0</span> to disable it.
+      </div>
+    </div>
     <div class="stats cols3" style="margin-bottom:10px;">
-      <div class="stat"><div class="stat-label">Daily Keep</div>
-        <div class="stat-val">${G.settings?.gfs_daily_keep??'—'}</div></div>
-      <div class="stat"><div class="stat-label">Weekly Keep</div>
-        <div class="stat-val">${G.settings?.gfs_weekly_keep??'—'}</div></div>
-      <div class="stat"><div class="stat-label">Monthly Keep</div>
-        <div class="stat-val">${G.settings?.gfs_monthly_keep??'—'}</div></div>
+      <div class="form-group" style="margin:0;">
+        <label>Daily Keep</label>
+        <input id="gfs-daily" type="number" min="0" step="1" value="${G.settings?.gfs_daily_keep??7}"/>
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Weekly Keep</label>
+        <input id="gfs-weekly" type="number" min="0" step="1" value="${G.settings?.gfs_weekly_keep??4}"/>
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Monthly Keep</label>
+        <input id="gfs-monthly" type="number" min="0" step="1" value="${G.settings?.gfs_monthly_keep??6}"/>
+      </div>
     </div>
-    <div class="text-sm text-muted" style="margin-bottom:8px;">
-      Set via GFS_DAILY_KEEP, GFS_WEEKLY_KEEP, GFS_MONTHLY_KEEP env vars.
+    <div class="btn-row" style="margin-bottom:6px;">
+      <button class="btn primary" onclick="saveGfsPolicy()">💾 Save Policy</button>
     </div>
+    <div id="gfs-save-result" class="text-sm" style="min-height:18px;margin-bottom:6px;"></div>
     <div id="gfs-content">
       <button class="btn" onclick="loadGfsStatus()">♻️ Check Recyclable Tapes</button>
     </div>`;
@@ -2543,6 +2565,31 @@ async function loadTapeHealth(){
       <pre style="font-size:10px;color:var(--muted);background:var(--surf2);border-radius:8px;padding:8px;margin-top:4px;overflow:auto;max-height:200px;white-space:pre-wrap;">${txt}</pre></details>`;
   }
   div.innerHTML=html;
+}
+
+async function saveGfsPolicy(){
+  const res=$('gfs-save-result'); if(!res) return;
+  const daily=parseInt($('gfs-daily')?.value,10);
+  const weekly=parseInt($('gfs-weekly')?.value,10);
+  const monthly=parseInt($('gfs-monthly')?.value,10);
+  res.innerHTML='<span class="text-muted">Saving…</span>';
+  const data=await api('/api/settings/gfs','POST',{daily,weekly,monthly});
+  if(data.ok){
+    const p=data.policy||{};
+    if(G.settings){
+      G.settings.gfs_daily_keep=p.daily;
+      G.settings.gfs_weekly_keep=p.weekly;
+      G.settings.gfs_monthly_keep=p.monthly;
+    }
+    // Reflect any clamping the server applied.
+    if($('gfs-daily')) $('gfs-daily').value=p.daily;
+    if($('gfs-weekly')) $('gfs-weekly').value=p.weekly;
+    if($('gfs-monthly')) $('gfs-monthly').value=p.monthly;
+    res.innerHTML=`<span class="c-green">✓ Saved — daily ${p.daily} / weekly ${p.weekly} / monthly ${p.monthly}. ${data.recyclable_count} tape(s) now recyclable.</span>`;
+    loadGfsStatus();
+  } else {
+    res.innerHTML=`<span class="c-red">✗ ${data.error||'Save failed'}</span>`;
+  }
 }
 
 async function loadGfsStatus(){
