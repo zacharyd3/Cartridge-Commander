@@ -41,6 +41,10 @@ GFS_DAILY_KEEP       = int(os.getenv("GFS_DAILY_KEEP",   "7"))
 GFS_WEEKLY_KEEP      = int(os.getenv("GFS_WEEKLY_KEEP",  "4"))
 GFS_MONTHLY_KEEP     = int(os.getenv("GFS_MONTHLY_KEEP", "6"))
 
+# Tape selection strategy: "spread" (round-robin across the library, default)
+# or "fill" (concentrate writes on one tape until full, then roll to the next).
+TAPE_FILL_STRATEGY   = os.getenv("TAPE_FILL_STRATEGY",   "spread").strip().lower()
+
 # Incremental backups
 INCREMENTAL_DIR      = os.getenv("INCREMENTAL_DIR",      "/var/lib/tl2000/incremental")
 

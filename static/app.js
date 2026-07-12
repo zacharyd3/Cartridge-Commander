@@ -2221,6 +2221,34 @@ function renderSettingsPage(c){
     </div>`;
   c.appendChild(gfsCard);
 
+  // Tape fill strategy card
+  const tsCard=el('div','card');
+  const _strat=G.settings?.tape_fill_strategy||'spread';
+  tsCard.innerHTML=`
+    <div class="card-title">📼 Tape Selection Strategy</div>
+    <div class="text-sm text-muted" style="margin-bottom:10px;line-height:1.5;">
+      Controls which tape auto-selection picks when the drive is empty. Selection is
+      capacity-aware either way: a tape that can hold the <em>whole</em> pending backup is always
+      preferred, and if no single tape has enough free space the backup is refused before writing
+      (multi-tape spanning is not supported).
+      <div style="margin-top:8px;display:grid;gap:4px;">
+        <div><strong>Spread</strong> — round-robin across the library (available → blank → least-recently-used). Balances wear.</div>
+        <div><strong>Fill</strong> — keep writing to one tape until it's full, then roll to the next. Makes it easy to pull a full tape for offsite storage.</div>
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:6px;">
+      <label>Strategy</label>
+      <select id="tape-strategy">
+        <option value="spread"${_strat==='spread'?' selected':''}>Spread — round-robin across tapes</option>
+        <option value="fill"${_strat==='fill'?' selected':''}>Fill — one tape at a time</option>
+      </select>
+    </div>
+    <div class="btn-row" style="margin-bottom:6px;">
+      <button class="btn primary" onclick="saveTapeStrategy()">💾 Save Strategy</button>
+    </div>
+    <div id="tape-strategy-result" class="text-sm" style="min-height:18px;"></div>`;
+  c.appendChild(tsCard);
+
   // Backup records card
   const recCard=el('div','card');
   recCard.innerHTML=`
@@ -2593,6 +2621,19 @@ async function saveGfsPolicy(){
     if($('gfs-monthly')) $('gfs-monthly').value=p.monthly;
     res.innerHTML=`<span class="c-green">✓ Saved — daily ${p.daily} / weekly ${p.weekly} / monthly ${p.monthly}. ${data.recyclable_count} tape(s) now recyclable.</span>`;
     loadGfsStatus();
+  } else {
+    res.innerHTML=`<span class="c-red">✗ ${data.error||'Save failed'}</span>`;
+  }
+}
+
+async function saveTapeStrategy(){
+  const res=$('tape-strategy-result'); const sel=$('tape-strategy');
+  if(!res||!sel) return;
+  res.innerHTML='<span class="text-muted">Saving…</span>';
+  const data=await api('/api/settings/tape_strategy','POST',{strategy:sel.value});
+  if(data.ok){
+    if(G.settings) G.settings.tape_fill_strategy=data.strategy;
+    res.innerHTML=`<span class="c-green">✓ Saved — ${data.strategy==='fill'?'filling one tape at a time':'spreading across tapes'}.</span>`;
   } else {
     res.innerHTML=`<span class="c-red">✗ ${data.error||'Save failed'}</span>`;
   }

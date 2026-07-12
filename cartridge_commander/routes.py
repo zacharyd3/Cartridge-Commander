@@ -13,7 +13,7 @@ from .flaskapp import app
 from .config import AUTO_REWIND_AFTER, BACKUP_LOG_LEVEL_DEFAULT, BACKUP_ROOT, CHANGER, CLEANING_WAIT_SECONDS, COMMAND_TIMEOUT, ERASE_BEFORE_BACKUP, ICON_PATH, POLL_SECONDS, POST_BACKUP_HOOK, PRE_BACKUP_HOOK, RESTORE_ROOT, SG_DEVICE, TAPE, TAPE_BLOCK_BYTES, VERIFY_AFTER_BACKUP, VERIFY_SAMPLE_MB, WEBUI_PASSWORD
 from . import state as shared_state
 from .state import TapeError, append_inventory_log, current_backup_log_level, is_cleaning_volume_tag, log_action, normalize_backup_log_level, now_ts, request_inventory_pause, request_inventory_resume, request_inventory_stop, run_cmd, set_changer_state, snapshot_backup_job, snapshot_changer_job, snapshot_format_job, snapshot_inventory_job, snapshot_restore_job, snapshot_verify_job
-from .settings import _NOTIFY_DEFAULT_TEMPLATES, build_restore_dest, get_ha_config, get_gfs_config, get_notify_config, get_restore_subfolder_pattern, set_gfs_config, set_ha_config, set_notify_config, set_restore_subfolder_pattern
+from .settings import _NOTIFY_DEFAULT_TEMPLATES, build_restore_dest, get_ha_config, get_gfs_config, get_notify_config, get_restore_subfolder_pattern, get_tape_fill_strategy, set_gfs_config, set_ha_config, set_notify_config, set_restore_subfolder_pattern, set_tape_fill_strategy
 from .changer import ensure_under_backup_root, ensure_under_restore_root, get_cleaning_slot, get_mail_slot_info, list_directories, list_restore_directories, refresh_state
 from .db import delete_tape_index, list_all_known_indexes, load_tape_index, mark_tape_archived, read_tape_index_live, save_tape_index, update_tape_index_metadata
 from .drive_history import _save_last_known_loaded_slot, build_loaded_tape_space_info, get_drive_info, get_effective_loaded_slot, space_meta_from_info
@@ -895,6 +895,16 @@ def api_settings_gfs_save():
     return jsonify({"ok": True, "detail": "GFS retention policy saved.",
                     "policy": cfg, "recyclable_count": len(recyclable)})
 
+@app.post("/api/settings/tape_strategy")
+def api_settings_tape_strategy_save():
+    """Persist the tape fill strategy (spread | fill) set from the UI."""
+    auth = require_password()
+    if auth is not None: return auth
+    p = request.get_json(silent=True) or {}
+    strategy = set_tape_fill_strategy(p.get("strategy", ""))
+    return jsonify({"ok": True, "detail": f"Tape strategy set to '{strategy}'.",
+                    "strategy": strategy})
+
 @app.get("/api/settings")
 def api_settings_get():
     auth = require_password()
@@ -910,6 +920,7 @@ def api_settings_get():
         "gfs_daily_keep": get_gfs_config()["daily"],
         "gfs_weekly_keep": get_gfs_config()["weekly"],
         "gfs_monthly_keep": get_gfs_config()["monthly"],
+        "tape_fill_strategy": get_tape_fill_strategy(),
         "restore_root": RESTORE_ROOT,
         "backup_root": BACKUP_ROOT,
         "changer": CHANGER, "tape": TAPE,

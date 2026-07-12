@@ -6,7 +6,7 @@ import time
 import datetime
 import threading
 from typing import Any, Dict, Optional
-from .config import GFS_DAILY_KEEP, GFS_MONTHLY_KEEP, GFS_WEEKLY_KEEP, HA_NOTIFY_ENABLED, HA_NOTIFY_SERVICE, HA_NOTIFY_TOKEN, HA_NOTIFY_URL, RESTORE_ROOT, RESTORE_SUBFOLDER_PATTERN
+from .config import GFS_DAILY_KEEP, GFS_MONTHLY_KEEP, GFS_WEEKLY_KEEP, HA_NOTIFY_ENABLED, HA_NOTIFY_SERVICE, HA_NOTIFY_TOKEN, HA_NOTIFY_URL, RESTORE_ROOT, RESTORE_SUBFOLDER_PATTERN, TAPE_FILL_STRATEGY
 
 
 _restore_subfolder_pattern: str = RESTORE_SUBFOLDER_PATTERN
@@ -172,6 +172,39 @@ def _load_gfs_config() -> None:
             for k in ("daily", "weekly", "monthly"):
                 if k in data:
                     _gfs_config[k] = _coerce_keep(data[k], _gfs_config[k])
+
+# ---------------------------------------------------------------------------
+# Tape fill strategy runtime config
+# ---------------------------------------------------------------------------
+# "spread" — round-robin across the library (default, original behaviour).
+# "fill"   — concentrate writes on one tape until full, then roll to the next
+#            (handy for pulling a full tape for offsite storage).
+_VALID_FILL_STRATEGIES = ("spread", "fill")
+_tape_strategy_lock = threading.Lock()
+_tape_fill_strategy: str = TAPE_FILL_STRATEGY if TAPE_FILL_STRATEGY in _VALID_FILL_STRATEGIES else "spread"
+
+def get_tape_fill_strategy() -> str:
+    with _tape_strategy_lock:
+        return _tape_fill_strategy
+
+def set_tape_fill_strategy(strategy: str) -> str:
+    from .db import _db_set_json
+    global _tape_fill_strategy
+    s = str(strategy or "").strip().lower()
+    if s not in _VALID_FILL_STRATEGIES:
+        s = "spread"
+    with _tape_strategy_lock:
+        _tape_fill_strategy = s
+    _db_set_json("tape_fill_strategy", s)
+    return s
+
+def _load_tape_fill_strategy() -> None:
+    from .db import _db_get_json
+    global _tape_fill_strategy
+    val = _db_get_json("tape_fill_strategy", None)
+    if isinstance(val, str) and val.strip().lower() in _VALID_FILL_STRATEGIES:
+        with _tape_strategy_lock:
+            _tape_fill_strategy = val.strip().lower()
 
 def _render_notify_template(key: str, **tokens: Any) -> str:
     """Render a notification template key with the given token substitutions."""
