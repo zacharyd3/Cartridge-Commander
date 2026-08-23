@@ -1,6 +1,7 @@
 """Environment-driven configuration constants for Cartridge Commander."""
 
 import os
+import stat
 
 
 CHANGER              = os.getenv("TL_CHANGER",            "/dev/sg12")
@@ -82,6 +83,71 @@ DEVICE_INFO = {
     "model": "3573-TL / TL2000",
     "sw_version": "0.7.0",
 }
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+def validate_device_paths():
+    """Check the configured device paths before anything tries to use them.
+
+    A wrong-but-plausible value here is the single easiest way to break the
+    app, and the failure is silent in the worst way: `mtx -f <bad path> status`
+    just exits non-zero, `run_cmd` raises, and the UI reports an empty library
+    with the drive offline -- which looks like a hardware fault rather than a
+    typo. Stray characters from the Docker device syntax are the usual cause
+    (``:/dev/sg10`` instead of ``/dev/sg10``), and a stale /dev/sgN number
+    after a reboot is the other.
+
+    Returns a list of human-readable problem strings; empty means all good.
+    Purely advisory -- the caller decides how loudly to complain, so the web
+    UI can still start and show the message rather than the container dying
+    with the reason buried in the logs.
+    """
+    problems = []
+    # SG_DEVICE is optional (health polling only); the other two are required.
+    for name, value, required in (
+        ("TL_CHANGER", CHANGER,   True),
+        ("TL_TAPE",    TAPE,      True),
+        ("SG_DEVICE",  SG_DEVICE, False),
+    ):
+        if not value:
+            if required:
+                problems.append(f"{name} is empty -- set it to the device path.")
+            continue
+
+        if not value.startswith("/"):
+            # Catches ':/dev/sg10', 'dev/sg10', quotes, and stray arrows -- all
+            # of which are relative paths that will never resolve.
+            problems.append(
+                f"{name}={value!r} is not an absolute path. Enter the bare device "
+                f"path with no colons, quotes or arrows (e.g. /dev/sg10); a value "
+                f"copied from Docker's host:container device syntax will look "
+                f"like this."
+            )
+            continue
+
+        if not os.path.exists(value):
+            problems.append(
+                f"{name}={value!r} does not exist in the container. Either the "
+                f"device is not mapped in (add a Device entry for it), or "
+                f"/dev/sgN renumbering moved it -- run scripts/identify-devices.sh "
+                f"on the host to find the current path."
+            )
+            continue
+
+        try:
+            if not stat.S_ISCHR(os.stat(value).st_mode):
+                problems.append(
+                    f"{name}={value!r} exists but is not a character device. "
+                    f"Expected a /dev node; check the Device mapping."
+                )
+        except OSError as exc:
+            problems.append(f"{name}={value!r} could not be inspected: {exc}")
+
+    return problems
+
 
 # ---------------------------------------------------------------------------
 # State
