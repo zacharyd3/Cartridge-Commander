@@ -39,13 +39,23 @@ In the Unraid GUI, **Docker > Add Container**, and fill in:
 | `/var/lib/tl2000` | `/mnt/user/appdata/cartridge-commander` | index DB, schedules, backup records — must persist |
 | `/mnt` (or narrower, e.g. `/mnt/user/backups`) | matching host path | wherever `BACKUP_ROOT`/`RESTORE_ROOT` point |
 
-**Device mappings** — add one "Device" entry per device the app talks to:
+**Device mappings** — add one "Device" entry per device the app talks to.
+Unraid uses the same path on both sides of the mapping, so each value is
+entered once, and **the matching env var must be that identical bare path**:
 
-| Container Device | Host Device |
-|---|---|
-| `/dev/tape-changer` | the changer — matches `TL_CHANGER` (see [Stable device paths](#stable-device-paths-recommended)) |
-| `/dev/nst0` | the tape drive, non-rewinding — matches `TL_TAPE` |
-| `/dev/tape-drive-sg` | drive's generic device, only if using `SG_DEVICE` health polling |
+| Device entry | Matching variable | Notes |
+|---|---|---|
+| `/dev/tape-changer` | `TL_CHANGER` | the changer (see [Stable device paths](#stable-device-paths-recommended)) |
+| `/dev/nst0` | `TL_TAPE` | the tape drive, non-rewinding |
+| `/dev/tape-drive-sg` | `SG_DEVICE` | drive's generic device, only if using health polling |
+
+> **Enter device variables as a bare path — no colons.** Docker's underlying
+> flag uses `host:container` syntax (`--device=/dev/sg10:/dev/sg10`), and a
+> colon that ends up in the *variable* (`TL_CHANGER=:/dev/sg10`) makes it a
+> relative path that cannot resolve. `mtx` then just exits non-zero and the UI
+> reports **0 tapes with the drive offline** — which looks like a hardware
+> fault but is a typo. The app validates these paths at startup
+> and logs an explicit `CONFIG ERROR` instead of failing silently.
 
 Passing explicit `--device` entries is enough for the container (running
 as root by default) to read/write those nodes — **you do not need
@@ -72,13 +82,17 @@ docker exec -it <container> sg_inq /dev/sgN   # confirm vendor/model per node
 
 Rather than run those by hand every reboot, [`scripts/identify-devices.sh`](scripts/identify-devices.sh)
 does the whole sweep for you and prints paste-ready values. Add it to the
-Unraid **User Scripts** plugin as a new script and hit "Run Script" (it's
-read-only — it queries SCSI inquiry data and never moves the picker arm, so
-it's safe to run any time, even mid-backup). It classifies every `/dev/sg*`
-node as changer vs. drive, pairs the drive with its `/dev/nstN` node, checks
-whether the udev symlinks below are installed, and ends with the exact
-`TL_CHANGER` / `TL_TAPE` / `SG_DEVICE` values and `--device` mappings to set
-in **Docker > CartridgeCommander > Edit**.
+Unraid **User Scripts** plugin as a new script and hit "Run Script" — it's
+read-only (it reads SCSI identity out of sysfs and never moves the picker arm)
+so it's safe to run any time, even mid-backup.
+
+It reads each device's SCSI Peripheral Device Type from
+`/sys/class/scsi_generic/*/device/type` — `8` is the changer, `1` is the drive
+— so it needs no extra packages and has no command output to misparse. It
+pairs the drive with its `/dev/nstN` node, reports whether the udev symlinks
+below are active, and prints the exact values to set in
+**Docker > CartridgeCommander > Edit**, one per line with no `host:container`
+syntax to paste by mistake.
 
 To stop chasing this every time, pin the devices by vendor/model instead of
 by number using the udev rule in [`udev-rules/99-tl2000.rules`](udev-rules/99-tl2000.rules)

@@ -5,10 +5,11 @@ Dockerfile's ``CMD``), or directly as ``python -m cartridge_commander.main``.
 """
 
 import os
+import sys
 import threading
 import sqlite3
 from .flaskapp import app
-from .config import CHANGER, INCREMENTAL_DIR, STARTUP_QUICK_SCAN, TAPE_CATALOG_DB, TAPE_INDEX_DIR
+from .config import CHANGER, INCREMENTAL_DIR, STARTUP_QUICK_SCAN, TAPE_CATALOG_DB, TAPE_INDEX_DIR, validate_device_paths
 from .settings import _load_gfs_config, _load_ha_config, _load_notify_config, _load_restore_subfolder_pattern, _load_tape_fill_strategy
 from .changer import refresh_state
 from .db import _load_action_log, db_log, init_tape_catalog, list_all_known_indexes, migrate_legacy_tape_indexes
@@ -33,6 +34,16 @@ def run() -> None:
         _vconn.close()
     except Exception:
         pass
+    # Check the device paths before any worker shells out to mtx/mt. A bad path
+    # otherwise surfaces as "0 tapes, drive offline", which reads as a hardware
+    # fault instead of a config typo. Advisory only -- we still start serving so
+    # the message is visible in the UI log rather than only in `docker logs`.
+    for _problem in validate_device_paths():
+        print(f"CONFIG ERROR: {_problem}", file=sys.stderr, flush=True)
+        try:
+            db_log("app", "error", f"Device configuration: {_problem}")
+        except Exception:
+            pass
     os.makedirs(INCREMENTAL_DIR, exist_ok=True)
     _load_schedules()
     _load_drive_history()
