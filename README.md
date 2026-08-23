@@ -70,6 +70,16 @@ dmesg | grep -i "Attached scsi generic"
 docker exec -it <container> sg_inq /dev/sgN   # confirm vendor/model per node
 ```
 
+Rather than run those by hand every reboot, [`scripts/identify-devices.sh`](scripts/identify-devices.sh)
+does the whole sweep for you and prints paste-ready values. Add it to the
+Unraid **User Scripts** plugin as a new script and hit "Run Script" (it's
+read-only — it queries SCSI inquiry data and never moves the picker arm, so
+it's safe to run any time, even mid-backup). It classifies every `/dev/sg*`
+node as changer vs. drive, pairs the drive with its `/dev/nstN` node, checks
+whether the udev symlinks below are installed, and ends with the exact
+`TL_CHANGER` / `TL_TAPE` / `SG_DEVICE` values and `--device` mappings to set
+in **Docker > CartridgeCommander > Edit**.
+
 To stop chasing this every time, pin the devices by vendor/model instead of
 by number using the udev rule in [`udev-rules/99-tl2000.rules`](udev-rules/99-tl2000.rules)
 (edit the `model` match if your drive generation differs from the IBM
