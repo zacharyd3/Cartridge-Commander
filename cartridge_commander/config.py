@@ -45,6 +45,9 @@ GFS_MONTHLY_KEEP     = int(os.getenv("GFS_MONTHLY_KEEP", "6"))
 # Tape selection strategy: "spread" (round-robin across the library, default)
 # or "fill" (concentrate writes on one tape until full, then roll to the next).
 TAPE_FILL_STRATEGY   = os.getenv("TAPE_FILL_STRATEGY",   "spread").strip().lower()
+# When a backup is bigger than the free space on its tape, continue it on
+# another tape instead of refusing to start (needs mbuffer).  Editable from the UI.
+ALLOW_TAPE_SPANNING  = os.getenv("ALLOW_TAPE_SPANNING",  "true").strip().lower() == "true"
 
 # Incremental backups
 INCREMENTAL_DIR      = os.getenv("INCREMENTAL_DIR",      "/var/lib/tl2000/incremental")

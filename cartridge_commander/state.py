@@ -37,6 +37,7 @@ _backup_job: Dict[str, Any] = {
     "started_at": None, "finished_at": None,
     "last_message": "No backup has run yet.", "log": [], "error": None,
     "log_level": BACKUP_LOG_LEVEL_DEFAULT,
+    "tapes": [], "current_tape": "",     # every tape this backup has written to
 }
 _backup_lock = threading.Lock()
 _tar_proc: Optional[subprocess.Popen] = None
@@ -230,6 +231,7 @@ def claim_backup_job(paths: List[str], log_level: Optional[str] = None) -> bool:
             started_at=now_ts(), finished_at=None,
             last_message="Scanning sources…", log=[], error=None,
             log_level=normalize_backup_log_level(log_level),
+            tapes=[], current_tape="",
         )
         _stop_requested = False
     return True

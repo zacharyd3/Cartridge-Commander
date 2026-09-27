@@ -33,9 +33,12 @@ function renderRetentionPage(c){
       <section class="panel" aria-label="Tape selection strategy">
         ${panelHead('Tape selection strategy','',`<button class="btn sm primary" onclick="saveTapeStrategy()">Save</button>`)}
         <div class="panel-body" style="gap:12px">
-          <p style="font-size:12.5px;line-height:1.6;color:var(--ink-2)">Applies when the drive is empty. Tapes with enough free space for the whole backup are preferred.</p>
+          <p style="font-size:12.5px;line-height:1.6;color:var(--ink-2)">Applies when the drive is empty. Backups are appended after what is already on a tape; tapes with enough free space for the whole backup are preferred.</p>
           ${strategyCard('spread','Spread','Round-robin across the library: available, then blank, then least recently used.', strat)}
           ${strategyCard('fill','Fill','Writes to one tape until full, then rolls to the next.', strat)}
+          <label class="toggle-row" for="span-toggle" style="padding-left:0;padding-right:0"><span><span class="t" style="display:block">Span backups across tapes</span>
+              <span class="d" style="display:block">A backup bigger than the free space on its tape continues on the next tape; the tapes are linked in the catalog. Off: such a backup is refused.</span></span>
+            <span class="toggle"><input type="checkbox" id="span-toggle" ${s.allow_tape_spanning!==false?'checked':''}/><span class="toggle-track"></span></span></label>
           <div id="tape-strategy-result" class="result"></div>
         </div>
       </section>
@@ -166,10 +169,11 @@ async function saveTapeStrategy(){
   const v = document.querySelector('[name=tape-strategy]:checked')?.value;
   if(!res||!v) return;
   res.className='result'; res.textContent='Saving…';
-  const data=await api('/api/settings/tape_strategy','POST',{strategy:v});
+  const span = !!$('span-toggle')?.checked;
+  const data=await api('/api/settings/tape_strategy','POST',{strategy:v, span});
   if(data.ok){
-    if(G.settings) G.settings.tape_fill_strategy=data.strategy;
-    res.className='result ok'; res.textContent=`Saved — ${data.strategy==='fill'?'filling one tape at a time':'spreading across tapes'}`;
+    if(G.settings){ G.settings.tape_fill_strategy=data.strategy; G.settings.allow_tape_spanning=data.span; }
+    res.className='result ok'; res.textContent=`Saved — ${data.strategy==='fill'?'filling one tape at a time':'spreading across tapes'} · ${data.span?'large backups span tapes':'no spanning'}`;
   } else { res.className='result bad'; res.textContent=data.error||'Save failed'; }
 }
 

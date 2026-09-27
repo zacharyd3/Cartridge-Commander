@@ -9,6 +9,7 @@ from .changer import refresh_state
 from .db import tape_catalog_conn
 from .drive_history import _save_last_known_loaded_slot
 from .records import _save_backup_records
+from .tape_layout import forget_tape, record_volumes
 from .notify import notify_format_complete
 from .mqtt import publish_state_to_mqtt
 
@@ -132,6 +133,9 @@ def format_worker(tapes: List[Dict[str, Any]], catalog_only: bool = False) -> No
             # ── Clear catalog entry ──────────────────────────────────────────
             # Reset the file index, space usage, and backup records for this tape.
             # Preserve physical metadata (slot, LTO generation, capacity).
+            # forget_tape also breaks any backup that continued onto (or
+            # from) another tape, since part of it is now gone.
+            forget_tape(vol, reason=f"{vol} erased")
             with tape_catalog_conn() as conn:
                 conn.execute("""
                     UPDATE tape_catalog SET
@@ -143,6 +147,7 @@ def format_worker(tapes: List[Dict[str, Any]], catalog_only: bool = False) -> No
                         remaining_pct = NULL,
                         space_estimated = 1,
                         backup_dirnames = '[]',
+                        sessions_json = '[]',
                         archived_at = NULL,
                         purpose = 'available',
                         present = 1,
@@ -153,10 +158,14 @@ def format_worker(tapes: List[Dict[str, Any]], catalog_only: bool = False) -> No
                 """, (slot, now_ts(), now_ts(), vol))
                 conn.commit()
 
-            # Remove backup records for this tape so space calculations are clean
+            # Remove backup records that lived only on this tape so space
+            # calculations are clean.  A backup that also spans other tapes
+            # keeps its record (now marked overwritten) since those tapes
+            # still hold part of it.
             with shared_state._backup_records_lock:
                 before = len(shared_state._backup_records)
-                shared_state._backup_records[:] = [r for r in shared_state._backup_records if r.get("volume_tag") != vol]
+                shared_state._backup_records[:] = [r for r in shared_state._backup_records
+                                                   if record_volumes(r) != [vol]]
                 removed = before - len(shared_state._backup_records)
             _save_backup_records()
             if removed:

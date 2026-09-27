@@ -137,6 +137,7 @@ symlinks instead of raw `/dev/sgN` paths.
 | `HA_URL`, `HA_TOKEN` | Home Assistant notifications (long-lived token) |
 | `TL_POLL_SECONDS` | how often the UI polls changer/drive status |
 | `ICON_PATH` | favicon/page icon served at `/icon.png` (default `/var/lib/tl2000/icon.png`) |
+| `ALLOW_TAPE_SPANNING` | let a backup larger than its tape's free space continue on further tapes (default `true`; also switchable on the Retention page) |
 | `STARTUP_QUICK_SCAN` | run a quick barcode scan on container start so present tapes don't show as archived (default `true`) |
 | `LOG_LEVEL` | container log (`docker logs`) verbosity: `INFO` (default) or `DEBUG` to also print every status poll command and its output, read-only API requests, per-file archive lines and thread names |
 | `LOG_HTTP_REQUESTS` | `quiet` (default) skips the UI's `/api/status` polling, `/healthz`, static files and icons; `all` logs every request |
@@ -149,6 +150,40 @@ The GFS retention keep counts (`GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`,
 `GFS_MONTHLY_KEEP`) seed the defaults, but they can also be edited and saved
 from the **Retention** page in the UI; the saved values
 are persisted and take precedence over the env vars.
+
+### How backups are laid out on tape
+
+Each backup is one tape file (a tar stream closed by a filemark), and new
+backups are **appended** after whatever is already on the tape. A tape marked
+*available*, one GFS retention says is *recyclable*, a blank tape, or any tape
+when `ERASE_BEFORE_BACKUP=true` is instead written from the start, and the
+catalog marks the backups that were on it as overwritten.
+
+**Backups can span tapes.** When a backup is bigger than the free space on
+its tape, it continues on another one: `mbuffer` writes straight to the drive
+and, when the drive reports end of tape, the app returns that tape to its slot,
+loads the next one (picked the same way as the first) and the stream carries
+on. Nothing is split up front, and files can be cut across tapes; the tapes
+are linked in the catalog as parts 1, 2, 3… of the same backup. Linked tapes
+show a link icon in the tape catalog, the tape drawer lists every backup on a
+tape together with the other tapes each one continues on, and the Activity
+records show the whole chain.
+
+Restore and verify read a spanned backup from its first tape onwards,
+loading each tape in turn, whichever of its tapes you opened. Every tape of
+the chain has to be in the library. Retention keeps or recycles a spanned
+backup's tapes together, and erasing any one of them marks the backup as no
+longer restorable.
+
+Spanning is on by default. It can be turned off on the **Retention** page
+(or with `ALLOW_TAPE_SPANNING=false`), and it needs `mbuffer`, which is in the
+image. With spanning off, a backup that no single tape can hold is refused
+before anything is written.
+
+On first start after upgrading from a version that always wrote from the
+start of the tape, the catalog is corrected once: older backup records on a
+tape that a later backup overwrote are marked *overwritten*, since only the
+newest one is still on the tape.
 
 ### Container logs
 
