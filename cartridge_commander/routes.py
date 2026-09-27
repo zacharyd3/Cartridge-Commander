@@ -14,7 +14,7 @@ from .config import AUTO_REWIND_AFTER, BACKUP_LOG_LEVEL_DEFAULT, BACKUP_ROOT, CH
 from . import state as shared_state
 from .state import TapeError, append_inventory_log, current_backup_log_level, is_cleaning_volume_tag, log_action, normalize_backup_log_level, now_ts, request_inventory_pause, request_inventory_resume, request_inventory_stop, run_cmd, set_changer_state, snapshot_backup_job, snapshot_changer_job, snapshot_format_job, snapshot_inventory_job, snapshot_restore_job, snapshot_verify_job
 from .settings import _NOTIFY_DEFAULT_TEMPLATES, build_restore_dest, get_ha_config, get_gfs_config, get_notify_config, get_restore_subfolder_pattern, get_tape_fill_strategy, set_gfs_config, set_ha_config, set_notify_config, set_restore_subfolder_pattern, set_tape_fill_strategy
-from .changer import ensure_under_backup_root, ensure_under_restore_root, get_cleaning_slot, get_mail_slot_info, list_directories, list_restore_directories, refresh_state
+from .changer import ensure_under_backup_root, ensure_under_restore_root, normalize_excludes, get_cleaning_slot, get_mail_slot_info, list_directories, list_restore_directories, refresh_state
 from .db import delete_tape_index, list_all_known_indexes, load_tape_index, mark_tape_archived, read_tape_index_live, save_tape_index, update_tape_index_metadata
 from .drive_history import _save_last_known_loaded_slot, build_loaded_tape_space_info, get_drive_info, get_effective_loaded_slot, space_meta_from_info
 from .records import get_backup_records, get_tape_health, gfs_classify, gfs_get_recyclable, gfs_stream_key
@@ -465,9 +465,12 @@ def api_backup_start():
     if not isinstance(paths, list) or not paths:
         return jsonify({"ok": False, "error": "Pick at least one folder."}), 400
     validated = [ensure_under_backup_root(x) for x in paths]
+    try: excludes = normalize_excludes(p.get("excludes"), validated)
+    except TapeError as e: return jsonify({"ok": False, "error": str(e)}), 400
     log_level = normalize_backup_log_level(p.get("log_level"))
     if not start_backup_thread(validated, backup_mode=p.get("mode", "full"),
-                               label=p.get("label", ""), log_level=log_level):
+                               label=p.get("label", ""), log_level=log_level,
+                               excludes=excludes):
         return jsonify({"ok": False, "error": "Backup already running."}), 409
     return jsonify({"ok": True, "detail": "Backup started — scanning sources.", "backup_job": snapshot_backup_job()})
 
@@ -786,9 +789,11 @@ def api_schedules_create():
     p = request.get_json(silent=True) or {}
     for f in ["paths","mode"]:
         if f not in p: return jsonify({"ok":False,"error":f"Missing: {f}"}), 400
+    try: excludes = normalize_excludes(p.get("excludes"), p["paths"])
+    except TapeError as e: return jsonify({"ok":False,"error":str(e)}), 400
     s = {"id": str(int(time.time()*1000)),
          "label": p.get("label","Scheduled backup"),
-         "paths": p["paths"], "mode": p["mode"],
+         "paths": p["paths"], "excludes": excludes, "mode": p["mode"],
          "hour": int(p.get("hour",2)), "minute": int(p.get("minute",0)),
          "day_of_week": int(p.get("day_of_week",0)),
          "day_of_month": int(p.get("day_of_month",1)),
@@ -817,7 +822,15 @@ def api_schedules_update(sid):
     with shared_state._schedules_lock:
         for s in shared_state._schedules:
             if s["id"] == sid:
-                for k in ["label","paths","mode","hour","minute","day_of_week","day_of_month","enabled"]:
+                # Excludes are checked against the sources the schedule will
+                # have after this update, so changing either keeps them consistent.
+                if "excludes" in p or "paths" in p:
+                    try:
+                        p["excludes"] = normalize_excludes(
+                            p.get("excludes", s.get("excludes", [])), p.get("paths", s.get("paths", [])))
+                    except TapeError as e:
+                        return jsonify({"ok":False,"error":str(e)}), 400
+                for k in ["label","paths","excludes","mode","hour","minute","day_of_week","day_of_month","enabled"]:
                     if k in p: s[k] = p[k]
                 _update_next_run(s)
                 found = s

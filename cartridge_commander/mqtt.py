@@ -539,10 +539,12 @@ def _handle_mqtt_cmd(topic, payload):  # noqa: C901
     elif suffix in ("backup_full", "backup_incr"):
         mode = "full" if suffix == "backup_full" else "incremental"
         with shared_state._schedules_lock: scheds = list(shared_state._schedules)
-        # Use paths from first enabled schedule, or fall back to BACKUP_ROOT
-        paths = next((s.get("paths",[]) for s in scheds if s.get("enabled")), [BACKUP_ROOT])
+        # Use paths (and excludes) from first enabled schedule, or fall back to BACKUP_ROOT
+        first = next((s for s in scheds if s.get("enabled")), None)
+        paths = first.get("paths",[]) if first else [BACKUP_ROOT]
+        excludes = (first.get("excludes") or []) if first else []
         label = _mqtt_runtime_cfg.get("backup_label","") or f"HA {mode} backup"
-        if start_backup_thread(paths, backup_mode=mode, label=label):
+        if start_backup_thread(paths, backup_mode=mode, label=label, excludes=excludes):
             log_action("mqtt_backup",True,f"Starting {mode} backup via HA")
         else:
             log_action("mqtt_backup",False,"Backup already running")
@@ -554,7 +556,8 @@ def _handle_mqtt_cmd(topic, payload):  # noqa: C901
             mode  = d.get("mode","full")
             label = d.get("label","") or _mqtt_runtime_cfg.get("backup_label","")
             if paths:
-                start_backup_thread(paths, backup_mode=mode, label=label)
+                start_backup_thread(paths, backup_mode=mode, label=label,
+                                    excludes=d.get("excludes") or [])
         except Exception as e: log_action("mqtt_backup_start",False,str(e))
 
     elif suffix == "stop_backup":

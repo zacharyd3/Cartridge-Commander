@@ -13,7 +13,28 @@ function schedWhen(s){
   return `Monthly on day ${s.day_of_month} at ${t}`;
 }
 
+// Excludes: paths inside a selected source that the backup leaves out, so a
+// whole folder (e.g. appdata) can be picked with a few subfolders skipped.
+const underPath = (p, root) => p.startsWith(root.replace(/\/+$/,'') + '/');
+function schedExclusion(p){
+  if(G.schedExcludes.includes(p)) return 'excluded';
+  if(G.schedExcludes.some(x => underPath(p, x))) return 'inherited';
+  if(G.schedPaths.some(s => underPath(p, s))) return 'excludable';
+  return null;
+}
+// Drop excludes whose source was removed — they would exclude nothing.
+function pruneSchedExcludes(){
+  G.schedExcludes = G.schedExcludes.filter(x => G.schedPaths.some(s => underPath(x, s)));
+}
+function excludeSchedPath(p){
+  G.schedExcludes = G.schedExcludes.filter(x => !underPath(x, p));  // now covered by p
+  if(!G.schedExcludes.includes(p)) G.schedExcludes.push(p);
+  renderPage();
+}
+function unexcludeSchedPath(p){ G.schedExcludes = G.schedExcludes.filter(x => x !== p); renderPage(); }
+
 function renderSchedulePage(c){
+  pruneSchedExcludes();
   const editing = !!G.schedEditId;
   const editingSched = editing ? (G.schedules||[]).find(x=>x.id===G.schedEditId) : null;
   c.insertAdjacentHTML('beforeend', `
@@ -52,6 +73,8 @@ function renderSchedulePage(c){
         <div class="panel-body" style="min-width:0">
           <div class="field"><span class="section-label">Sources <span class="note">· ${G.schedPaths.length} selected</span></span>
             <div class="chips" id="sched-chips">${renderChips(G.schedPaths,'schedPaths')}</div></div>
+          <div class="field"><span class="section-label">Excluded <span class="note">· ${G.schedExcludes.length} ${G.schedExcludes.length===1?'folder':'folders'}</span></span>
+            <div class="chips" id="sched-excl-chips">${renderSchedExcludeChips()}</div></div>
           <div class="pathbar">
             <button class="btn icon" onclick="schedBrowseUp()" aria-label="Up one level">${ico('up',15)}</button>
             <button class="btn sm" onclick="schedBrowseRoot()">Root</button>
@@ -89,13 +112,20 @@ function renderSchedBrowser(){
   const br=G.schedBrowser; if(!br) return;
   setTxt('sched-browser-path', br.current||'');
   const list=$('sched-browser-list'); if(!list) return;
-  list.innerHTML = browserRows(br, G.schedPaths, {});
+  list.innerHTML = browserRows(br, G.schedPaths, {exclusion: schedExclusion});
   wireBrowser(list, {
     onNav: p => schedBrowse(p),
     onAdd: p => addSchedPath(p),
     onRemove: p => { const i = G.schedPaths.indexOf(p); if(i>=0) removePath('schedPaths', i); },
+    onExclude: p => excludeSchedPath(p),
+    onUnexclude: p => unexcludeSchedPath(p),
   });
   setHTML('sched-chips', renderChips(G.schedPaths,'schedPaths'));
+  setHTML('sched-excl-chips', renderSchedExcludeChips());
+}
+function renderSchedExcludeChips(){
+  return renderChips(G.schedExcludes, 'schedExcludes', {cls:'excl',
+    empty: G.schedPaths.length ? 'None — open a selected folder below to exclude items inside it' : 'None'});
 }
 async function schedBrowse(path){
   G.schedBrowser = await api(`/api/browse?path=${encodeURIComponent(path)}`);
@@ -125,7 +155,7 @@ function renderScheduleList(){
       <td><div style="font-weight:600;font-size:13px">${esc(s.label||'Backup')}</div><div class="sub">${s.enabled?esc(lastRun(s)):'Disabled'}</div></td>
       <td>${esc(schedWhen(s))}</td>
       <td>${s.enabled ? `<div>${s.next_run?esc(new Date(s.next_run*1000).toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})):'—'}</div><div class="sub">${fmtNext(s.next_run)}</div>` : '<span class="text-muted">Paused</span>'}</td>
-      <td class="path" style="line-height:1.6">${(s.paths||[]).map(esc).join('<br>')}</td>
+      <td class="path" style="line-height:1.6">${(s.paths||[]).map(esc).join('<br>')}${(s.excludes||[]).map(x=>`<br><span class="excl-path" title="Excluded">− ${esc(x)}</span>`).join('')}</td>
       <td><div class="actions">
         <button class="btn sm" onclick="runSchedNow('${jsq(s.id)}')" ${running?'disabled':''} aria-label="Run ${esc(s.label||'schedule')} now">${ico('play',13)}Run now</button>
         <button class="btn icon" onclick="editSched('${jsq(s.id)}')" aria-label="Edit ${esc(s.label||'schedule')}" title="Edit">${ico('edit',14)}</button>
@@ -142,7 +172,7 @@ function renderScheduleWithDraft(draft){
   applyScheduleDraft();
 }
 function newSchedule(){
-  G.schedEditId = null; G.schedPaths = [];
+  G.schedEditId = null; G.schedPaths = []; G.schedExcludes = [];
   renderScheduleWithDraft({...SCHED_DRAFT_DEFAULT});
   $('sched-form-card')?.scrollIntoView({behavior:'smooth', block:'start'});
   $('sc-label')?.focus();
@@ -152,6 +182,7 @@ function editSched(id){
   if(!s) return;
   G.schedEditId = id;
   G.schedPaths = [...(s.paths||[])];
+  G.schedExcludes = [...(s.excludes||[])];
   renderScheduleWithDraft({
     label: s.label||'', mode: s.mode||'weekly',
     dow: String(s.day_of_week??0), dom: String(s.day_of_month??1),
@@ -162,6 +193,7 @@ function editSched(id){
 function cancelSchedEdit(){
   G.schedEditId = null;
   G.schedPaths = [];
+  G.schedExcludes = [];
   renderScheduleWithDraft({...SCHED_DRAFT_DEFAULT});
 }
 
@@ -172,6 +204,7 @@ async function saveSchedule(){
   const payload={
     label:$('sc-label')?.value||'Scheduled backup',
     paths:G.schedPaths,
+    excludes:G.schedExcludes,
     mode:$('sc-mode')?.value||'weekly',
     hour:parseInt($('sc-hour')?.value||'2'),
     minute:parseInt($('sc-min')?.value||'0'),
@@ -185,6 +218,7 @@ async function saveSchedule(){
   if(data.ok){
     G.schedEditId=null;
     G.schedPaths=[];
+    G.schedExcludes=[];
     renderScheduleWithDraft({...SCHED_DRAFT_DEFAULT, result: editing ? 'Schedule updated' : 'Schedule created'});
     const r=$('sc-result'); if(r) r.className='result ok';
     loadSchedules();
@@ -213,7 +247,7 @@ async function runSchedNow(id){
     percent: 0, bytes_written: 0, speed_bps: 0, eta_seconds: null,
   };
   showPage('backup');
-  const data=await api('/api/backup/start','POST',{paths:s.paths, mode:s.backup_mode||'full', label:s.label});
+  const data=await api('/api/backup/start','POST',{paths:s.paths, excludes:s.excludes||[], mode:s.backup_mode||'full', label:s.label});
   if(!data.ok){
     if(G.state) G.state.backup_job = {...G.state.backup_job, running:false, status:'idle'};
     if((data.error||'').toLowerCase().includes('already running')){

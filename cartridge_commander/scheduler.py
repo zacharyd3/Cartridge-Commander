@@ -75,7 +75,8 @@ def scheduler_loop():
             nr = s.get("next_run")
             if nr and now >= nr:
                 paths, label = s.get("paths",[]), s.get("label","?")
-                if start_backup_thread(paths, backup_mode=s.get("backup_mode", "full"), label=label):
+                if start_backup_thread(paths, backup_mode=s.get("backup_mode", "full"), label=label,
+                                       excludes=s.get("excludes") or []):
                     log_action("scheduler", True, f"'{label}' fired.")
                 else:
                     log_action("scheduler", False, f"'{label}' skipped — backup running.")

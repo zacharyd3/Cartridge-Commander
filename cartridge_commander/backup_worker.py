@@ -247,8 +247,11 @@ class _ScanCancelled(Exception):
 
 
 def start_backup_thread(paths: List[str], backup_mode: str = "full", label: str = "",
-                        log_level: str = BACKUP_LOG_LEVEL_DEFAULT) -> bool:
+                        log_level: str = BACKUP_LOG_LEVEL_DEFAULT,
+                        excludes: Optional[List[str]] = None) -> bool:
     """Claim the backup job and run backup_worker in the background.
+
+    ``excludes`` are paths inside ``paths`` to leave out of the archive.
 
     The claim happens synchronously, so the job already reads as running when
     this returns; False means another backup is active and nothing started.
@@ -258,21 +261,23 @@ def start_backup_thread(paths: List[str], backup_mode: str = "full", label: str 
     threading.Thread(
         target=backup_worker,
         args=(paths,),
-        kwargs={"backup_mode": backup_mode, "label": label, "log_level": log_level},
+        kwargs={"backup_mode": backup_mode, "label": label, "log_level": log_level,
+                "excludes": list(excludes or [])},
         daemon=True,
     ).start()
     return True
 
 
 def backup_worker(paths: List[str], backup_mode: str = "full",
-                  job_id: str = "", label: str = "", log_level: str = BACKUP_LOG_LEVEL_DEFAULT) -> None:
+                  job_id: str = "", label: str = "", log_level: str = BACKUP_LOG_LEVEL_DEFAULT,
+                  excludes: Optional[List[str]] = None) -> None:
     from .records import add_backup_record
     from .db import save_tape_index, update_tape_index_metadata
     from .verify_worker import verify_worker
     from .drive_history import _is_tape_full_error, _mt_status_shows_eot, _record_backup_done, _save_last_known_loaded_slot, _switch_to_rewrite_candidate, build_tape_space_info, bytes_written_for_volume, space_meta_from_info
     from .state import TapeError, append_backup_log, backup_log_allows, bytes_human, is_cleaning_volume_tag, log_action, log_exit_codes, log_pipeline, log_traceback, normalize_backup_log_level, now_ts, run_cmd, secs_human, set_backup_state
     from .mqtt import publish_state_to_mqtt
-    from .changer import ensure_under_backup_root, estimate_path_size, refresh_state
+    from .changer import ensure_under_backup_root, estimate_path_size, normalize_excludes, refresh_state
     from .notify import notify_backup_failure, notify_backup_success
     from .settings import build_backup_dirname
     # The caller has already claimed the job (claim_backup_job), so it reads as
@@ -283,9 +288,12 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
     try:
         selected = [ensure_under_backup_root(p) for p in paths]
         rels     = [os.path.relpath(p, "/") for p in selected]
+        excluded = normalize_excludes(excludes or [], selected)
         set_backup_state(status="scanning", selected_paths=selected, log_level=log_level,
                          last_message=f"Scanning {len(selected)} source(s)…")
         append_backup_log(f"Scanning {len(selected)} source(s) to estimate backup size…", level="minimal")
+        if excluded:
+            append_backup_log(f"Excluding {len(excluded)} path(s): {', '.join(excluded)}", level="minimal")
         publish_state_to_mqtt(refresh_state())
 
         scanned = 0
@@ -301,7 +309,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
                                  last_message=f"Scanning sources… {bytes_human(scanned + so_far)} found")
 
         for p in selected:
-            scanned += estimate_path_size(p, progress=_scan_progress)
+            scanned += estimate_path_size(p, progress=_scan_progress, exclude=excluded)
             set_backup_state(bytes_total=scanned)
             if shared_state._stop_requested:
                 raise _ScanCancelled()
@@ -511,8 +519,15 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
         # denied, vanished mid-backup, …) is skipped with a warning instead of
         # making tar exit 2 and failing the whole backup.  Skipped items are
         # reported once tar finishes.
+        # Excludes: --anchored matches each pattern from the start of the member
+        # name (so mnt/user/appdata/plex never also drops some other .../plex),
+        # and --no-wildcards takes folder names containing * ? [ literally.
+        # tar skips an excluded directory without descending into it.
+        _EXCLUDE_ARGS = (["--anchored", "--no-wildcards"]
+                         + [f"--exclude={os.path.relpath(x, '/')}" for x in excluded]
+                         if excluded else [])
         tar_cmd = (["tar", "-C", "/", "-cvf", "-", "--ignore-failed-read"]
-                   + _SPARSE_ARGS + _XATTR_ARGS + extra_args + rels)
+                   + _SPARSE_ARGS + _XATTR_ARGS + extra_args + _EXCLUDE_ARGS + rels)
 
         # dd: final writer — large block size, write directly to tape device.
         dd_cmd = ["dd", f"bs={_TAPE_BLOCK_BYTES}", f"of={TAPE}", "iflag=fullblock", "status=progress"]
@@ -948,6 +963,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
                 "label": label or job_id,
                 "volume_tag": vol,
                 "paths": selected,
+                "excludes": excluded,
                 "mode": backup_mode,
                 "status": "cancelled",
                 "started_at": int(start),
@@ -1155,6 +1171,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
             "label": label or job_id,
             "volume_tag": vol,
             "paths": selected,
+            "excludes": excluded,
             "mode": backup_mode,
             "status": "completed",
             "started_at": int(start),
@@ -1187,6 +1204,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
             "label": label or job_id,
             "volume_tag": vol,
             "paths": selected,
+            "excludes": excluded,
             "mode": backup_mode,
             "status": "failed",
             "error": str(e),

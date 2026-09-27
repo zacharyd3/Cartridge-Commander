@@ -179,40 +179,61 @@ function verifyPanel(){
   </section>`;
 }
 
-function renderChips(arr, key){
-  if(!arr.length) return '<span class="text-sm text-muted">None selected</span>';
-  return arr.map((p,i)=>`<span class="chip" title="${esc(p)}"><span>${esc(p)}</span><button class="chip-x" aria-label="Remove ${esc(p)}" onclick="removePath('${key}',${i})">${ico('x',13)}</button></span>`).join('');
+function renderChips(arr, key, {cls='', empty='None selected'}={}){
+  if(!arr.length) return `<span class="text-sm text-muted">${esc(empty)}</span>`;
+  return arr.map((p,i)=>`<span class="chip${cls?' '+cls:''}" title="${esc(p)}"><span>${esc(p)}</span><button class="chip-x" aria-label="Remove ${esc(p)}" onclick="removePath('${key}',${i})">${ico('x',13)}</button></span>`).join('');
 }
 function removePath(key, i){ G[key].splice(i,1); renderPage(); }
 
 // Shared server-side folder browser (backup sources + schedule sources).
-function browserRows(br, selected, {onNav, onAdd, onRemove}){
+// ``exclusion(path)`` (optional) lets a browser offer excludes for items inside
+// a selected source: return 'excluded', 'inherited' (a parent is excluded),
+// 'excludable', or a falsy value for the normal Add/Added button.
+function browserRows(br, selected, {exclusion}={}){
   const rows = [];
+  // Returns [row class, row click attr, button html] for one entry.
+  const rowState = p => {
+    if(selected.includes(p)) return [' selected', `data-remove="${esc(p)}"`,
+      `<button class="btn xs added" data-remove="${esc(p)}">${ico('check',13)}Added</button>`];
+    const ex = exclusion?.(p);
+    if(ex==='excluded') return [' excluded', `data-unexclude="${esc(p)}"`,
+      `<button class="btn xs excluded" data-unexclude="${esc(p)}" title="Include again">${ico('minus',13)}Excluded</button>`];
+    if(ex==='inherited') return [' excluded', '', '<span class="file-meta">Excluded by parent</span>'];
+    if(ex==='excludable') return ['', `data-exclude="${esc(p)}"`,
+      `<button class="btn xs" data-exclude="${esc(p)}">${ico('minus',13)}Exclude</button>`];
+    return ['', `data-add="${esc(p)}"`, `<button class="btn xs" data-add="${esc(p)}">${ico('plus',13)}Add</button>`];
+  };
   if(br.parent) rows.push(`<div class="file-row dir" data-nav="${esc(br.parent)}"><span class="file-icon">${ico('up',15)}</span><span class="file-name">.. up one level</span></div>`);
   for(const d of br.directories||[]){
-    const on = selected.includes(d.path);
-    rows.push(`<div class="file-row dir${on?' selected':''}" data-nav="${esc(d.path)}"><span class="file-icon">${ico('folder',16)}</span><span class="file-name">${esc(d.name)}/</span>
-      <button class="btn xs ${on?'added':''}" data-${on?'remove':'add'}="${esc(d.path)}">${on?ico('check',13)+'Added':ico('plus',13)+'Add'}</button></div>`);
+    const [cls, , btn] = rowState(d.path);
+    rows.push(`<div class="file-row dir${cls}" data-nav="${esc(d.path)}"><span class="file-icon">${ico('folder',16)}</span><span class="file-name">${esc(d.name)}/</span>
+      ${btn}</div>`);
   }
   for(const f of br.files||[]){
-    const on = selected.includes(f.path);
-    rows.push(`<div class="file-row${on?' selected':''}" data-${on?'remove':'add'}="${esc(f.path)}"><span class="file-icon">${ico('file',16)}</span><span class="file-name">${esc(f.name)}</span>
+    const [cls, click, btn] = rowState(f.path);
+    rows.push(`<div class="file-row${cls}" ${click}><span class="file-icon">${ico('file',16)}</span><span class="file-name">${esc(f.name)}</span>
       <span class="file-meta">${hBytes(f.size||0)}</span>
-      <button class="btn xs ${on?'added':''}" data-${on?'remove':'add'}="${esc(f.path)}">${on?ico('check',13)+'Added':ico('plus',13)+'Add'}</button></div>`);
+      ${btn}</div>`);
   }
   if(!(br.directories||[]).length && !(br.files||[]).length) rows.push('<div class="empty-state">Empty folder</div>');
   return rows.join('');
 }
-function wireBrowser(list, {onNav, onAdd, onRemove}){
+function wireBrowser(list, {onNav, onAdd, onRemove, onExclude, onUnexclude}){
+  const act = el => {
+    const d = el.dataset;
+    if(d.add != null){ onAdd(d.add); return true; }
+    if(d.remove != null){ onRemove(d.remove); return true; }
+    if(d.exclude != null && onExclude){ onExclude(d.exclude); return true; }
+    if(d.unexclude != null && onUnexclude){ onUnexclude(d.unexclude); return true; }
+    return false;
+  };
   list.onclick = e => {
-    const t = e.target.closest('[data-add],[data-remove],[data-nav]');
+    const t = e.target.closest('[data-add],[data-remove],[data-exclude],[data-unexclude],[data-nav]');
     if(!t) return;
     const btn = e.target.closest('button');
-    if(btn?.dataset.add != null){ onAdd(btn.dataset.add); return; }
-    if(btn?.dataset.remove != null){ onRemove(btn.dataset.remove); return; }
+    if(btn && act(btn)) return;
     if(t.dataset.nav != null){ onNav(t.dataset.nav); return; }
-    if(t.dataset.add != null){ onAdd(t.dataset.add); return; }
-    if(t.dataset.remove != null){ onRemove(t.dataset.remove); }
+    act(t);
   };
 }
 
