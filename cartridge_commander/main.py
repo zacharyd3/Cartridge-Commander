@@ -13,7 +13,7 @@ from .flaskapp import app
 from . import config as cfg
 from .config import CHANGER, INCREMENTAL_DIR, STARTUP_QUICK_SCAN, TAPE_CATALOG_DB, TAPE_INDEX_DIR, validate_device_paths
 from .logsetup import LOG_HTTP_REQUESTS, LOG_LEVEL, configure_logging, get_logger
-from .settings import _load_gfs_config, _load_ha_config, _load_notify_config, _load_restore_subfolder_pattern, _load_tape_fill_strategy
+from .settings import _load_gfs_config, _load_ha_config, _load_notify_config, _load_restore_subfolder_pattern, _load_tape_fill_strategy, _load_allow_tape_spanning
 from .changer import refresh_state
 from .db import _load_action_log, db_log, init_tape_catalog, list_all_known_indexes, migrate_legacy_tape_indexes
 from .drive_history import _load_drive_history, _load_last_known_loaded_slot
@@ -84,8 +84,16 @@ def run() -> None:
     _load_notify_config()
     _load_gfs_config()
     _load_tape_fill_strategy()
+    _load_allow_tape_spanning()
     _load_backup_records()
     _load_action_log()
+    # Catalogs from before backups were appended: record which old backups a
+    # later one overwrote, and where the surviving one sits.  Runs once.
+    try:
+        from .tape_layout import migrate_legacy_layout
+        migrate_legacy_layout()
+    except Exception as e:
+        _log.warning("Tape layout upgrade failed: %s", e)
     with shared_state._schedules_lock:
         _scheds = list(shared_state._schedules)
     _log.info("Loaded %d schedule(s), %d backup record(s).", len(_scheds), len(shared_state._backup_records))

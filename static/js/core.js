@@ -137,6 +137,7 @@ function plural(n, w, p){ return `${n} ${n===1?w:(p||w+'s')}`; }
 
 // ── Icons (inline stroke SVG) ────────────────────────────────────────────────
 const ICONS = {
+  link:'<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
   grid:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   upload:'<path d="M12 15V3"/><path d="m7 8 5-5 5 5"/><path d="M20 15v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4"/>',
   restore:'<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
@@ -192,6 +193,36 @@ function hydrateIcons(root=document){
 // ── Small HTML builders ──────────────────────────────────────────────────────
 function badge(text, tone='', dot=false){
   return `<span class="badge ${tone}">${dot?'<span class="d"></span>':''}${esc(text)}</span>`;
+}
+// ── Backups spanning tapes ───────────────────────────────────────────────────
+// A backup too big for its tape continues on further tapes. `chain` lists its
+// tapes in order ([{volume_tag, file_number}]); the tape being looked at is
+// highlighted and the others open their tape drawer.
+function tapeChainHTML(chain, current=''){
+  if(!chain || chain.length < 2) return '';
+  return `<span class="tape-chain" title="One backup continued across ${chain.length} tapes, in this order">${ico('link',13)}${chain.map((c,i) => {
+    const v = c.volume_tag || '?';
+    const tag = v === current
+      ? `<span class="tc on">${esc(v)}</span>`
+      : `<button type="button" class="tc" onclick="event.stopPropagation();openTapeByVol('${jsq(v)}')" title="Open ${esc(v)}">${esc(v)}</button>`;
+    return (i ? '<span class="arr" aria-hidden="true">→</span>' : '') + tag;
+  }).join('')}</span>`;
+}
+// Tapes a backup record was written to, in order.
+function recordSegments(r){
+  if(Array.isArray(r?.segments) && r.segments.length) return r.segments;
+  return r?.volume_tag ? [{volume_tag:r.volume_tag, file_number:0, bytes:r.bytes_written||0}] : [];
+}
+// Sessions (one per backup, in tape order) the catalog knows for a tape.
+function tapeSessions(vol){
+  const m = (G.indexes||{})[vol] || (G.indexMeta||[]).find(x => x.volume_tag === vol);
+  return (m?.sessions || []).slice().sort((a,b) => (a.file_number||0) - (b.file_number||0));
+}
+// Open the tape drawer for a volume tag, wherever the tape is.
+function openTapeByVol(vol){
+  const r = (typeof catalogRows === 'function' ? catalogRows() : []).find(x => x.vol === vol);
+  if(r){ openCatalogRow(r); return; }
+  openTapeDrawer({slot:null, volume_tag:vol, full:false, in_drive:false, has_index:true, is_archived:true});
 }
 function panelHead(title, sub='', right=''){
   return `<div class="panel-head"><div><h2>${title}</h2>${sub?`<p>${sub}</p>`:''}</div>${right}</div>`;

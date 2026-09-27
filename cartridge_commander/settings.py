@@ -6,7 +6,7 @@ import time
 import datetime
 import threading
 from typing import Any, Dict, Optional
-from .config import GFS_DAILY_KEEP, GFS_MONTHLY_KEEP, GFS_WEEKLY_KEEP, HA_NOTIFY_ENABLED, HA_NOTIFY_SERVICE, HA_NOTIFY_TOKEN, HA_NOTIFY_URL, RESTORE_ROOT, RESTORE_SUBFOLDER_PATTERN, TAPE_FILL_STRATEGY
+from .config import GFS_DAILY_KEEP, GFS_MONTHLY_KEEP, GFS_WEEKLY_KEEP, HA_NOTIFY_ENABLED, HA_NOTIFY_SERVICE, HA_NOTIFY_TOKEN, HA_NOTIFY_URL, RESTORE_ROOT, RESTORE_SUBFOLDER_PATTERN, TAPE_FILL_STRATEGY, ALLOW_TAPE_SPANNING
 
 
 _restore_subfolder_pattern: str = RESTORE_SUBFOLDER_PATTERN
@@ -205,6 +205,36 @@ def _load_tape_fill_strategy() -> None:
     if isinstance(val, str) and val.strip().lower() in _VALID_FILL_STRATEGIES:
         with _tape_strategy_lock:
             _tape_fill_strategy = val.strip().lower()
+
+# ---------------------------------------------------------------------------
+# Tape spanning runtime config
+# ---------------------------------------------------------------------------
+# True — a backup larger than the free space on its tape continues onto
+#        further tapes (each continuation is linked to the first in the catalog).
+# False — refuse to start a backup that no single tape can hold.
+_tape_spanning_lock = threading.Lock()
+_allow_tape_spanning: bool = ALLOW_TAPE_SPANNING
+
+def get_allow_tape_spanning() -> bool:
+    with _tape_spanning_lock:
+        return _allow_tape_spanning
+
+def set_allow_tape_spanning(enabled: Any) -> bool:
+    from .db import _db_set_json
+    global _allow_tape_spanning
+    with _tape_spanning_lock:
+        _allow_tape_spanning = bool(enabled)
+        val = _allow_tape_spanning
+    _db_set_json("allow_tape_spanning", val)
+    return val
+
+def _load_allow_tape_spanning() -> None:
+    from .db import _db_get_json
+    global _allow_tape_spanning
+    val = _db_get_json("allow_tape_spanning", None)
+    if isinstance(val, bool):
+        with _tape_spanning_lock:
+            _allow_tape_spanning = val
 
 def _render_notify_template(key: str, **tokens: Any) -> str:
     """Render a notification template key with the given token substitutions."""

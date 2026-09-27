@@ -21,9 +21,13 @@ function sessionSpaceHTML(vol, sessions, space){
   const used = space.used_bytes || 0;
   const free = space.remaining_bytes ?? Math.max(0, cap-used);
   const pctUsed = Math.max(0, Math.min(100, used/cap*100));
-  // Bytes per backup session from completed records on this volume.
+  // Bytes per backup session on this tape: the catalog's per-tape sessions
+  // (a backup spanning tapes only counts its part on this one), else records.
   const bySess = {};
-  for(const r of (G.records||[])){
+  const tsess = tapeSessions(vol);
+  if(tsess.length){
+    for(const s of tsess) if(s.dirname) bySess[s.dirname] = (bySess[s.dirname]||0) + Number(s.bytes||0);
+  } else for(const r of (G.records||[])){
     if(r.volume_tag !== vol || r.status !== 'completed' || !r.backup_dirname) continue;
     bySess[r.backup_dirname] = (bySess[r.backup_dirname]||0) + Number(r.bytes_written||0);
   }
@@ -39,7 +43,9 @@ function sessionSpaceHTML(vol, sessions, space){
   const older = known.slice(0, -3).reduce((a,s)=>a+bySess[s],0);
   const segs = [];
   if(older) segs.push({label:`${known.length-3} older`, v:older, color:SESSION_RAMP[0]});
-  shown.forEach((s,i) => segs.push({label:(s.match(/\d{4}-\d{2}-\d{2}/)||[s])[0], v:bySess[s], color:SESSION_RAMP[SESSION_RAMP.length - shown.length + i]}));
+  // Label from the date on (several backups a day get a time suffix to tell them apart).
+  const sessLabel = s => { const i = s.search(/\d{4}-\d{2}-\d{2}/); return i >= 0 ? s.slice(i) : s; };
+  shown.forEach((s,i) => segs.push({label:sessLabel(s), v:bySess[s], color:SESSION_RAMP[SESSION_RAMP.length - shown.length + i]}));
   const other = Math.max(0, used - segs.reduce((a,s)=>a+s.v,0));
   if(other > cap*0.005) segs.unshift({label:'Other data', v:other, color:'var(--neutral)'});
   const w = v => (v/cap*100).toFixed(2)+'%';
@@ -51,6 +57,29 @@ function sessionSpaceHTML(vol, sessions, space){
       ${segs.map(s=>`<span class="sw" style="width:10px;height:10px;background:${s.color}"></span><span class="lbl mono">${esc(s.label)}</span><span class="val">${hBytes(s.v)}</span>`).join('')}
       <span class="sw outline" style="width:10px;height:10px;background:var(--grid)"></span><span class="lbl">Free</span><span class="val">${hBytes(free)}</span>
     </div></div>`;
+}
+
+// Every backup on a tape, in the order written (one tape file each), with the
+// other tapes of any backup that continues across tapes.
+function tapeSessionsHTML(vol){
+  const ss = tapeSessions(vol);
+  if(!ss.length) return '';
+  const rows = ss.map(s => {
+    const parts = s.parts || 1;
+    const dead = s.broken || s.status === 'failed' || s.status === 'cancelled';
+    const flags = [
+      parts > 1 ? badge(`Part ${s.part} of ${parts}`, 'info') : '',
+      s.broken ? badge('Broken — another part was overwritten', 'bad')
+        : s.status === 'failed' ? badge('Incomplete', 'bad')
+        : s.status === 'cancelled' ? badge('Cancelled', 'warn') : '',
+    ].join('');
+    const chain = parts > 1 ? tapeChainHTML(s.chain, vol) : '';
+    return `<div class="tape-sess${dead?' dead':''}">
+      <div class="top"><span class="fn" title="Tape file number">#${esc(s.file_number ?? '?')}</span><span class="nm" title="${esc(s.dirname||'')}">${esc(s.dirname || '(unnamed)')}/</span><span class="sz">${hBytes(s.bytes||0)}</span></div>
+      ${flags || chain ? `<div class="top" style="flex-wrap:wrap">${flags}${chain}</div>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="field" style="margin-top:16px"><span class="section-label">Backups on this tape · ${ss.length}</span><div class="tape-sessions">${rows}</div></div>`;
 }
 
 async function openTapeDrawer(info){
@@ -90,7 +119,7 @@ async function openTapeDrawer(info){
       <span>Backups</span><span class="mono">${h.backup_count ?? '—'}</span>
       <span>Written</span><span class="mono">${h.total_backup_bytes?hBytes(h.total_backup_bytes):'—'}</span>
       ${meta?.file_count?`<span>Files</span><span class="mono">${meta.file_count.toLocaleString()}</span>`:''}
-    </div>` : '';
+    </div>${tapeSessionsHTML(vol)}` : '';
   $('td-result').textContent=''; $('td-result').className='result';
 
   // ── Actions ──────────────────────────────────────────────────────────────
@@ -186,8 +215,9 @@ async function openTapeDrawer(info){
       if(sessions.length > 1){
         single.style.display = 'none';
         banner.style.display = '';
+        const partsOf = Object.fromEntries(tapeSessions(vol).map(x => [x.dirname, x.parts||1]));
         switchEl.innerHTML = [...sessions].reverse().map((s,i) => `<button type="button" role="radio" aria-checked="${s===current}" class="sess-opt${s===current?' active':''}" data-session="${esc(s)}">
-            <span class="sess-opt-dot"></span><span class="sess-opt-name">${esc(s)}/</span>${i===0?'<span class="sess-opt-badge">Latest</span>':''}</button>`).join('');
+            <span class="sess-opt-dot"></span><span class="sess-opt-name">${esc(s)}/</span>${partsOf[s]>1?`<span class="sess-opt-badge span" title="This backup spans ${partsOf[s]} tapes">${ico('link',11)} ${partsOf[s]} tapes</span>`:''}${i===0?'<span class="sess-opt-badge">Latest</span>':''}</button>`).join('');
         switchEl.querySelectorAll('.sess-opt').forEach(btn => btn.onclick = () => switchTapeSession(btn.dataset.session));
         setTxt('td-index-meta', `${(idx.file_count||G.tdFiles.length).toLocaleString()} files · ${sessions.length} sessions`);
       } else {

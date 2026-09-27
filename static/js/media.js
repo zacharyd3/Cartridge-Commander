@@ -172,7 +172,7 @@ function mediaRowHTML(r){
   const sel = G.fmtSelected.has(r.vol);
   return `<tr class="clickable${sel?' sel':''}" data-vol="${esc(r.vol)}">
     <td><input type="checkbox" aria-label="Select ${esc(r.vol)}" ${sel?'checked':''} ${cand?'':'disabled'} onchange="fmtToggle('${jsq(r.vol)}',this.checked)"/></td>
-    <td class="vol">${esc(r.vol)}</td>
+    <td class="vol">${esc(r.vol)}${linkedTapesMark(r)}</td>
     <td>${esc(r.loc)}</td>
     <td>${badge(label, tone)}</td>
     <td><div class="tbl-usage">${known ? `<span class="meter"><span style="width:${pct.toFixed(0)}%;background:${meterColor(pct)}"></span></span><span class="v">${toTB(used).toFixed(2)} / ${toTB(cap).toFixed(2)} TB</span>` : '<span class="text-muted">—</span>'}</div></td>
@@ -181,6 +181,18 @@ function mediaRowHTML(r){
     <td>${r.where==='drive' && G.state?.backup_job?.running ? 'Writing now' : last ? esc(fmtDate(last)) : '—'}</td>
     <td>${ico('chevR',16,'style="color:var(--muted)"')}</td>
   </tr>`;
+}
+
+// Marker for a tape holding part of a backup that continues on other tapes.
+function linkedTapesMark(r){
+  const others = new Set();
+  for(const sess of (r.meta?.sessions||[])){
+    if((sess.parts||1) < 2) continue;
+    for(const c of (sess.chain||[])) if(c.volume_tag !== r.vol) others.add(c.volume_tag);
+  }
+  if(!others.size) return '';
+  const t = `Holds part of a backup that spans tapes · linked with ${[...others].join(', ')}`;
+  return ` <span title="${esc(t)}" aria-label="${esc(t)}" style="color:var(--accent-ink);vertical-align:-2px">${ico('link',13)}</span>`;
 }
 
 function openCatalogRow(r){

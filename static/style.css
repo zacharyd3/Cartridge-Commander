@@ -680,3 +680,22 @@ details pre,pre.raw{margin-top:10px;padding:12px;background:var(--panel-2);borde
   .action-banner{flex-wrap:wrap;gap:12px;}
   .banner-body{flex-basis:calc(100% - 60px);}
 }
+
+/* a backup that spans tapes: its tapes in order (core.js tapeChainHTML) */
+.tape-chain{display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px;font-family:var(--mono);font-size:11.5px;color:var(--ink-3);line-height:1.4;}
+.tape-chain > .ico{color:var(--accent-ink);flex-shrink:0;}
+.tape-chain .tc{font:inherit;font-weight:600;color:var(--accent-ink);background:var(--accent-tint);border:1px solid var(--accent-line);border-radius:4px;padding:1px 6px;cursor:pointer;}
+.tape-chain .tc:hover{border-color:var(--accent);}
+.tape-chain .tc:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+.tape-chain .tc.on{background:var(--accent);border-color:var(--accent);color:#fff;cursor:default;}
+.tape-chain .arr{color:var(--faint);}
+/* per-tape list of backups (tape drawer) */
+.tape-sessions{display:flex;flex-direction:column;border:1px solid var(--line-2);border-radius:6px;overflow:hidden;}
+.tape-sess{display:flex;flex-direction:column;gap:4px;padding:8px 12px;border-bottom:1px solid var(--line-2);font-size:12.5px;}
+.tape-sess:last-child{border-bottom:none;}
+.tape-sess .top{display:flex;align-items:center;gap:8px;min-width:0;}
+.tape-sess .fn{font-family:var(--mono);font-size:11px;color:var(--faint);flex-shrink:0;min-width:24px;}
+.tape-sess .nm{flex:1;min-width:0;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tape-sess .sz{font-family:var(--mono);font-size:11.5px;color:var(--muted);flex-shrink:0;}
+.tape-sess.dead .nm{color:var(--faint);text-decoration:line-through;}
+.sess-opt-badge.span{color:var(--accent-ink);background:var(--accent-tint);}
