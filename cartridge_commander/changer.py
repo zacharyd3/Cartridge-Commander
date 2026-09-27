@@ -385,25 +385,79 @@ def get_cleaning_slot() -> Optional[int]:
     return (shared_state._state_cache.get("summary") or {}).get("cleaning_slot")
 
 
-def estimate_path_size(path, progress=None, exclude=None):
-    """Sum file sizes under ``path``, skipping anything in ``exclude``.
+def _data_bytes(fp, st):
+    """Bytes tar will actually archive for a regular file.
+
+    A file using fewer blocks than its length may be sparse; tar --sparse
+    archives only its data regions, so count those via SEEK_DATA/SEEK_HOLE
+    (the same probe tar uses).  Blocks alone would undercount on compressed
+    filesystems such as ZFS, where tar still writes every byte.
+    """
+    size = st.st_size
+    if size == 0 or getattr(st, "st_blocks", size) * 512 >= size or not hasattr(os, "SEEK_DATA"):
+        return size
+    try:
+        fd = os.open(fp, os.O_RDONLY)
+    except OSError:
+        return size
+    try:
+        data, off = 0, 0
+        while off < size:
+            try: start = os.lseek(fd, off, os.SEEK_DATA)
+            except OSError: break          # ENXIO: no data past off
+            end = os.lseek(fd, start, os.SEEK_HOLE)
+            data += end - start
+            off = end
+        return data
+    except OSError:
+        return size
+    finally:
+        os.close(fd)
+
+
+def estimate_path_size(path, progress=None, exclude=None, seen=None, breakdown=None):
+    """Estimate the bytes tar will write for ``path``, skipping ``exclude``.
+
+    Counts what tar archives rather than raw file lengths: symlinks count as
+    links (not their targets), a hardlinked file counts once (pass the same
+    ``seen`` set across sources, as tar dedupes across the whole archive),
+    and sparse files count only their data.
 
     ``progress(bytes_so_far)`` is called every 1000 files, so a long walk can
-    report its running total (or raise to abort).
+    report its running total (or raise to abort).  ``breakdown``, if given,
+    is filled with {top-level entry path: bytes} for ``path``.
     """
+    import stat as _stat
     exclude = set(exclude or ())
-    if os.path.isfile(path):
-        try: return os.path.getsize(path)
+    seen = set() if seen is None else seen
+
+    def _file_bytes(fp):
+        try: st = os.lstat(fp)
         except OSError: return 0
+        if not _stat.S_ISREG(st.st_mode): return 0
+        if st.st_nlink > 1:
+            key = (st.st_dev, st.st_ino)
+            if key in seen: return 0
+            seen.add(key)
+        return _data_bytes(fp, st)
+
+    if not os.path.isdir(path) or os.path.islink(path):
+        return _file_bytes(path)
     total = 0
     files = 0
     for r, ds, fs in os.walk(path, onerror=lambda e: None, followlinks=False):
         if exclude:
             ds[:] = [d for d in ds if os.path.join(r, d) not in exclude]
+        rel = os.path.relpath(r, path)
+        top = None if rel == os.curdir else os.path.join(path, rel.split(os.sep, 1)[0])
         for n in fs:
-            if exclude and os.path.join(r, n) in exclude: continue
-            try: total += os.path.getsize(os.path.join(r, n))
-            except OSError: pass
+            fp = os.path.join(r, n)
+            if exclude and fp in exclude: continue
+            b = _file_bytes(fp)
+            total += b
+            if breakdown is not None:
+                k = top or fp
+                breakdown[k] = breakdown.get(k, 0) + b
             files += 1
             if progress and files % 1000 == 0:
                 progress(total)
