@@ -248,7 +248,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
     from .db import save_tape_index, update_tape_index_metadata
     from .verify_worker import verify_worker
     from .drive_history import _is_tape_full_error, _mt_status_shows_eot, _record_backup_done, _save_last_known_loaded_slot, _switch_to_rewrite_candidate, build_tape_space_info, bytes_written_for_volume, space_meta_from_info
-    from .state import TapeError, append_backup_log, backup_log_allows, bytes_human, is_cleaning_volume_tag, log_action, normalize_backup_log_level, now_ts, run_cmd, secs_human, set_backup_state
+    from .state import TapeError, append_backup_log, backup_log_allows, bytes_human, is_cleaning_volume_tag, log_action, log_exit_codes, log_pipeline, log_traceback, normalize_backup_log_level, now_ts, run_cmd, secs_human, set_backup_state
     from .mqtt import publish_state_to_mqtt
     from .changer import ensure_under_backup_root, estimate_path_size, refresh_state
     from .notify import notify_backup_failure, notify_backup_success
@@ -498,6 +498,11 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
         )
 
         # ── Spawn processes ──────────────────────────────────────────────────
+        log_pipeline(
+            "backup", tar_cmd,
+            mbuf_cmd if _has_mbuffer else (["pv", "-n", "-F", "%b", "-i", "2"] if _has_pv else None),
+            dd_cmd,
+        )
         _tar_log_fh = open(_tar_log_path, "wb")
 
         tar_proc = subprocess.Popen(
@@ -809,6 +814,8 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
             dd_err_out = "\n".join(_pv_stderr_lines[-10:])
 
         dd_rc = dd_proc.wait(timeout=60)
+        log_exit_codes("backup", tar=tar_rc, **({"mbuffer": mbuf_proc.returncode} if mbuf_proc else {}),
+                       **({"pv": pv_proc.returncode} if pv_proc else {}), dd=dd_rc)
 
         # Final byte count:
         #   - mbuffer+dd: _dd_stderr_extra has dd's byte count (most accurate)
@@ -1115,6 +1122,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
         )
         append_backup_log(f"Backup failed: {e}")
         log_action("backup", False, str(e))
+        log_traceback("backup", e)
         add_backup_record({
             "id": record_id,
             "label": label or job_id,

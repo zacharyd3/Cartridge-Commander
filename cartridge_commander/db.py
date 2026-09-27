@@ -8,6 +8,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional
 from .config import COMMAND_TIMEOUT, LOG_MAX_ROWS, LOG_RETENTION_DAYS, TAPE, TAPE_BLOCK_BYTES, TAPE_CATALOG_DB, TAPE_INDEX_DIR
 from . import state as shared_state
+from .logsetup import get_logger, level_from_name
 
 
 def db_counts() -> Dict[str, int]:
@@ -97,8 +98,16 @@ def init_tape_catalog() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tape_catalog_present ON tape_catalog(present, is_deleted)")
         conn.commit()
 
-def db_log(category: str, level: str, message: str) -> None:
+def db_log(category: str, level: str, message: str, console_level: Optional[str] = None) -> None:
+    """Write to the UI's app_log table and mirror to the container log.
+
+    ``console_level`` overrides the level used for the container log only,
+    so a job message can surface as a WARNING/ERROR in ``docker logs``
+    without changing how the UI has always stored and filtered it.
+    """
     from .state import now_ts
+    # Mirror first so the line is visible even if the DB write below fails.
+    get_logger(category).log(level_from_name(console_level or level), message)
     ts = now_ts()
     with tape_catalog_conn() as conn:
         conn.execute(
@@ -490,7 +499,8 @@ def read_tape_index_live() -> List[str]:
 
     Always rewinds before reading.
     """
-    from .state import TapeError
+    from .state import TapeError, log_exit_codes, log_pipeline
+    get_logger("index").info("$ mt -f %s rewind", TAPE)
     try:
         subprocess.run(["mt", "-f", TAPE, "rewind"],
                        capture_output=True, timeout=max(COMMAND_TIMEOUT, 300), check=True)
@@ -501,6 +511,7 @@ def read_tape_index_live() -> List[str]:
     # to tar's stdin; tar reads the archive from stdin with no block-size concern.
     # status=progress ensures dd emits its byte counter and any errors to stderr
     # even if tar exits early — critical for diagnosing failures.
+    log_pipeline("index", ["dd", f"if={TAPE}", f"bs={TAPE_BLOCK_BYTES}", "status=progress"], ["tar", "-t", "-f", "-"])
     dd_proc = subprocess.Popen(
         ["dd", f"if={TAPE}", f"bs={TAPE_BLOCK_BYTES}", "status=progress"],
         stdout=subprocess.PIPE,
@@ -551,6 +562,7 @@ def read_tape_index_live() -> List[str]:
         )
     dd_proc.wait(timeout=30)
     _dd_drain_t.join(timeout=5)
+    log_exit_codes("index", dd=dd_proc.returncode, tar=tar_proc.returncode)
 
     dd_stderr = b"".join(_dd_stderr_buf).decode(errors="ignore").strip()
     files = [l for l in (tar_out or b"").decode(errors="ignore").splitlines() if l.strip()]

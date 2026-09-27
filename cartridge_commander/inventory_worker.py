@@ -164,7 +164,7 @@ def inventory_worker(mode: str = "full"):
     """
     from .db import list_all_known_indexes, load_tape_index, mark_all_indexes_not_present, mark_tape_archived, read_tape_index_live, save_tape_index, update_tape_index_metadata
     from .drive_history import _save_last_known_loaded_slot, build_loaded_tape_space_info, build_tape_space_info, space_meta_from_info
-    from .state import TapeError, _fmt_ts_short, append_inventory_log, bytes_human, calc_eta_seconds, inventory_should_stop, inventory_wait_if_paused, is_cleaning_volume_tag, log_action, now_ts, request_inventory_resume, run_cmd, set_inventory_state
+    from .state import TapeError, _fmt_ts_short, append_inventory_log, bytes_human, calc_eta_seconds, inventory_should_stop, inventory_wait_if_paused, is_cleaning_volume_tag, log_action, log_traceback, now_ts, request_inventory_resume, run_cmd, set_inventory_state
     from .mqtt import publish_state_to_mqtt
     from .changer import refresh_state
     from .notify import notify_inventory_done
@@ -604,6 +604,7 @@ def inventory_worker(mode: str = "full"):
         )
         append_inventory_log(msg)
         if final_status == "failed":
+            log_traceback("inventory", e)
             log_action("inventory", False, str(e))
         else:
             log_action("inventory", True, msg)

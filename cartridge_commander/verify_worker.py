@@ -28,7 +28,7 @@ def verify_worker(vol: str, backup_record_id: Optional[str] = None) -> None:
          the verify log so it is trivial to diagnose any genuine failure.
     """
     from .records import _save_backup_records
-    from .state import append_verify_log, backup_log_allows, bytes_human, calc_eta_seconds, log_action, now_ts, run_cmd, set_verify_state
+    from .state import append_verify_log, backup_log_allows, bytes_human, calc_eta_seconds, log_action, log_pipeline, log_traceback, now_ts, run_cmd, set_verify_state
     from .mqtt import publish_state_to_mqtt
     from .changer import refresh_state
     from .notify import notify_verify_failure
@@ -137,6 +137,7 @@ def verify_worker(vol: str, backup_record_id: Optional[str] = None) -> None:
             dd_cmd += [f"count={block_count}"]
         append_verify_log(f"dd command: {' '.join(dd_cmd)}")
 
+        log_pipeline("verify", dd_cmd, ["tar", "-t", "-f", "-"])
         dd_proc  = subprocess.Popen(dd_cmd,  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         tar_proc = subprocess.Popen(
             ["tar", "-t", "-f", "-"],
@@ -327,6 +328,7 @@ def verify_worker(vol: str, backup_record_id: Optional[str] = None) -> None:
         set_verify_state(running=False, status="failed", finished_at=now_ts(), eta_seconds=0,
                          error=str(e), last_message=f"Verify failed: {e}")
         append_verify_log(f"Verification failed with exception: {e}")
+        log_traceback("verify", e)
         if verbose:
             for _tbl in tb.splitlines()[-10:]:
                 append_verify_log(f"  {_tbl}")

@@ -12,6 +12,9 @@ except Exception:
     mqtt = None
 from .config import BACKUP_ROOT, CHANGER, COMMAND_TIMEOUT, DEVICE_INFO, HAS_MAIL_SLOT, HA_DISCOVERY_PREFIX, MQTT_BASE, MQTT_HOST, MQTT_PASS, MQTT_PORT, MQTT_USER, POLL_SECONDS, SG_DEVICE, TAPE, VERIFY_SAMPLE_MB
 from . import state as shared_state
+from .logsetup import get_logger
+
+_log = get_logger("mqtt")
 
 
 _health_cache: Dict[str, Any] = {}
@@ -651,12 +654,23 @@ def mqtt_loop():
     if not mqtt_available(): return
     def on_connect(c,u,f,rc,props=None):
         global _mqtt_connected; _mqtt_connected = (rc==0)
-        if _mqtt_connected: publish_discovery(); publish_state_to_mqtt(refresh_state())
-    def on_disconnect(c,u,rc,props=None):
+        if _mqtt_connected:
+            _log.info("Connected to MQTT broker %s:%s (base topic %s).", MQTT_HOST, MQTT_PORT, MQTT_BASE)
+            publish_discovery(); publish_state_to_mqtt(refresh_state())
+        else:
+            _log.error("MQTT broker %s:%s refused the connection: %s", MQTT_HOST, MQTT_PORT, rc)
+    def on_disconnect(c,u,*args):
+        # paho v1 passes (rc), v2 passes (flags, rc, props).
         global _mqtt_connected; _mqtt_connected = False
+        rc = args[1] if len(args) >= 2 else (args[0] if args else "?")
+        _log.warning("Disconnected from MQTT broker %s:%s (rc=%s); paho will retry.", MQTT_HOST, MQTT_PORT, rc)
     def on_message(c,u,msg):
-        try: _handle_mqtt_cmd(msg.topic,(msg.payload or b"").decode(errors="ignore"))
-        except Exception as e: log_action("mqtt_msg",False,str(e))
+        payload = (msg.payload or b"").decode(errors="ignore")
+        _log.info("Command received on %s: %s", msg.topic, payload[:200] or "(empty)")
+        try: _handle_mqtt_cmd(msg.topic,payload)
+        except Exception as e:
+            _log.exception("MQTT command on %s failed", msg.topic)
+            log_action("mqtt_msg",False,str(e))
     _mqtt_client = (mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
                     if hasattr(mqtt,"CallbackAPIVersion") else mqtt.Client())
     if MQTT_USER: _mqtt_client.username_pw_set(MQTT_USER, MQTT_PASS)
@@ -664,6 +678,7 @@ def mqtt_loop():
     _mqtt_client.on_disconnect = on_disconnect
     _mqtt_client.on_message = on_message
     _mqtt_client.will_set(mqtt_topic("availability"), "offline", retain=True)
+    _log.info("Connecting to MQTT broker %s:%s%s…", MQTT_HOST, MQTT_PORT, f" as {MQTT_USER}" if MQTT_USER else "")
     _mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
     _mqtt_client.loop_start()
     while True:
