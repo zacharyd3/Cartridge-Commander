@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict, List
 from .config import CHANGER, COMMAND_TIMEOUT, TAPE
 from . import state as shared_state
-from .state import append_format_log, log_action, now_ts, run_cmd, set_format_state
+from .state import append_format_log, log_action, log_traceback, now_ts, run_cmd, set_format_state
 from .changer import refresh_state
 from .db import tape_catalog_conn
 from .drive_history import _save_last_known_loaded_slot
@@ -171,6 +171,7 @@ def format_worker(tapes: List[Dict[str, Any]], catalog_only: bool = False) -> No
         except Exception as fmt_err:
             append_format_log(f"✗ Failed to format {vol}: {fmt_err}")
             log_action("format", False, f"{vol}: {fmt_err}")
+            log_traceback("format", fmt_err)
             failed.append({**tape, "error": str(fmt_err)})
             # Best-effort unload on error (only relevant for hardware path)
             if loaded_this_tape and not catalog_only:

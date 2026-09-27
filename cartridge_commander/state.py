@@ -10,6 +10,7 @@ fully *rebound* elsewhere (not just mutated in place) -- a plain
 
 import os
 import json
+import logging
 import time
 import datetime
 import threading
@@ -17,6 +18,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from .config import BACKUP_LOG_LEVEL_DEFAULT, BACKUP_ROOT, CHANGER, COMMAND_TIMEOUT, TAPE
+from .logsetup import get_logger
 
 
 _action_lock = threading.Lock()
@@ -122,6 +124,18 @@ def now_ts() -> int:
 class TapeError(RuntimeError):
     pass
 
+def log_traceback(category: str, exc: BaseException) -> None:
+    """Put the full traceback of an unexpected job failure in the container log.
+
+    TapeError is the "expected" failure (a device command said no) and its
+    message is already logged, so it only gets a traceback at DEBUG.
+    """
+    log = get_logger(category)
+    if isinstance(exc, (TapeError, subprocess.TimeoutExpired)):
+        log.debug("Traceback for %s failure:", category, exc_info=exc)
+    else:
+        log.error("Unexpected %s error: %s: %s", category, type(exc).__name__, exc, exc_info=exc)
+
 def is_cleaning_volume_tag(vol: str) -> bool:
     return str(vol or "").strip().upper().startswith("CLN")
 
@@ -167,17 +181,33 @@ def log_action(kind, ok, detail, extra=None):
     _save_action_log()
     db_log("action", "info" if ok else "error", f"{kind}: {detail}")
 
+def console_level_for(message: str) -> str:
+    """Best-guess severity of a free-text job message, for the container log.
+
+    Job logs are stored as plain "info" lines; this only decides whether one
+    prints as INFO, WARNING or ERROR in ``docker logs`` so failures stand out.
+    """
+    m = str(message or "").strip().lower()
+    if m.startswith(("✗", "error", "fatal")) or " failed" in m or m.startswith("failed"):
+        return "error"
+    if m.startswith(("⚠", "warning", "warn:")) or "could not" in m or "skipped" in m:
+        return "warning"
+    return "info"
+
 def _insert_log(job_dict, lock, message, category="app"):
     from .db import db_log
     with lock:
         job_dict["log"].insert(0, {"ts": now_ts(), "message": message})
         del job_dict["log"][200:]
         job_dict["last_message"] = message
-    db_log(category, "info", message)
+    db_log(category, "info", message, console_level=console_level_for(message))
 
 def append_backup_log(msg, level="minimal"):
     if backup_log_allows(level):
         _insert_log(_backup_job, _backup_lock, msg, "backup")
+    else:
+        # Below the job's UI log level -- still visible with LOG_LEVEL=DEBUG.
+        get_logger("backup").debug(msg)
 def append_restore_log(msg):   _insert_log(_restore_job, _restore_lock, msg, "restore")
 def append_inventory_log(msg): _insert_log(_inventory_job, _inventory_lock, msg, "inventory")
 def set_backup_state(**kw):
@@ -237,11 +267,50 @@ def snapshot_backup_job():    return snap(_backup_job,    _backup_lock)
 def snapshot_restore_job():   return snap(_restore_job,   _restore_lock)
 def snapshot_inventory_job(): return snap(_inventory_job, _inventory_lock)
 
+def log_pipeline(category: str, *cmds) -> None:
+    """Log a shell pipeline (e.g. tar | mbuffer | dd) about to be spawned."""
+    get_logger(category).info("$ %s", " | ".join(" ".join(str(a) for a in c) for c in cmds if c))
+
+def log_exit_codes(category: str, **codes) -> None:
+    """Log the exit codes of a finished pipeline; WARNING if any is non-zero."""
+    bad = any(rc not in (0, None) for rc in codes.values())
+    get_logger(category).log(
+        logging.WARNING if bad else logging.INFO,
+        "Pipeline exited: %s", ", ".join(f"{k}={v}" for k, v in codes.items()),
+    )
+
+def _is_query_cmd(args) -> bool:
+    """True for read-only status queries the UI poll runs every few seconds."""
+    return bool(args) and args[-1] == "status"
+
 def run_cmd(args, timeout=None):
     timeout = timeout or COMMAND_TIMEOUT
-    proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    log = get_logger("cmd")
+    cmdline = " ".join(str(a) for a in args)
+    # Status polls are DEBUG (they fire on every /api/status); anything that
+    # moves a tape or changes the drive is INFO so it is always visible.
+    level = logging.DEBUG if _is_query_cmd(args) else logging.INFO
+    log.log(level, "$ %s", cmdline)
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log.error("$ %s -- timed out after %ss", cmdline, timeout)
+        raise
+    except OSError as e:
+        log.error("$ %s -- could not run: %s", cmdline, e)
+        raise
+    elapsed = time.monotonic() - started
     if proc.returncode != 0:
-        raise TapeError((proc.stderr or proc.stdout or "Command failed").strip())
+        err = (proc.stderr or proc.stdout or "Command failed").strip()
+        # A failing status query is routine (``mt status`` on an empty drive)
+        # and would repeat every poll; refresh_state logs real outages once.
+        log.log(logging.DEBUG if level == logging.DEBUG else logging.WARNING,
+                "$ %s -- exit %s after %.1fs: %s", cmdline, proc.returncode, elapsed, err)
+        raise TapeError(err)
+    log.log(level, "$ %s -- ok in %.1fs", cmdline, elapsed)
+    if proc.stdout.strip() and log.isEnabledFor(logging.DEBUG):
+        log.debug("%s output:\n%s", args[0], proc.stdout.strip())
     return proc.stdout.strip()
 
 def bytes_human(v):
@@ -291,7 +360,7 @@ def append_format_log(msg: str) -> None:
         _format_job["log"].insert(0, {"ts": now_ts(), "message": msg})
         del _format_job["log"][200:]
         _format_job["last_message"] = msg
-    db_log("format", "info", msg)
+    db_log("format", "info", msg, console_level=console_level_for(msg))
 
 def set_verify_state(**kw):
     with _verify_lock: _verify_job.update(kw)
@@ -301,6 +370,8 @@ def append_verify_log(msg):
         _verify_job["log"].insert(0, {"ts": now_ts(), "message": msg})
         del _verify_job["log"][100:]
         _verify_job["last_message"] = msg
+    from .logsetup import level_from_name
+    get_logger("verify").log(level_from_name(console_level_for(msg)), msg)
 
 def snapshot_verify_job():
     return snap(_verify_job, _verify_lock)

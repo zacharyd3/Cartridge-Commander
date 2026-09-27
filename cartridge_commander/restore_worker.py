@@ -7,7 +7,7 @@ import subprocess
 from typing import List, Optional
 from .config import CHANGER, COMMAND_TIMEOUT, TAPE, TAPE_BLOCK_BYTES
 from . import state as shared_state
-from .state import TapeError, append_restore_log, is_cleaning_volume_tag, log_action, now_ts, run_cmd, set_restore_state
+from .state import TapeError, append_restore_log, is_cleaning_volume_tag, log_action, log_exit_codes, log_pipeline, log_traceback, now_ts, run_cmd, set_restore_state
 from .changer import ensure_under_restore_root, refresh_state
 from .drive_history import _record_restore_done, _save_last_known_loaded_slot
 from .mqtt import publish_state_to_mqtt
@@ -83,6 +83,7 @@ def restore_worker(volume_tag: str, tape_paths: List[str], dest: str, slot: Opti
         set_restore_state(status="extracting")
         publish_state_to_mqtt(refresh_state())
 
+        log_pipeline("restore", dd_cmd, tar_cmd)
         dd_proc = subprocess.Popen(dd_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         tar_proc = subprocess.Popen(
             tar_cmd,
@@ -146,6 +147,7 @@ def restore_worker(volume_tag: str, tape_paths: List[str], dest: str, slot: Opti
 
         rc    = tar_proc.wait()
         dd_rc = dd_proc.wait(timeout=30)
+        log_exit_codes("restore", dd=dd_rc, tar=rc)
         t_dd_err.join(timeout=5)
         shared_state._restore_proc = None
 
@@ -197,6 +199,7 @@ def restore_worker(volume_tag: str, tape_paths: List[str], dest: str, slot: Opti
                           error=str(e), last_message=f"Restore failed: {e}")
         append_restore_log(f"Restore failed: {e}")
         log_action("restore", False, str(e))
+        log_traceback("restore", e)
     finally:
         shared_state._restore_proc = None
         shared_state._stop_restore = False

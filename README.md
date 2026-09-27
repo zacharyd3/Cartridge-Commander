@@ -138,6 +138,8 @@ symlinks instead of raw `/dev/sgN` paths.
 | `TL_POLL_SECONDS` | how often the UI polls changer/drive status |
 | `ICON_PATH` | favicon/page icon served at `/icon.png` (default `/var/lib/tl2000/icon.png`) |
 | `STARTUP_QUICK_SCAN` | run a quick barcode scan on container start so present tapes don't show as archived (default `true`) |
+| `LOG_LEVEL` | container log (`docker logs`) verbosity: `INFO` (default) or `DEBUG` to also print every status poll command and its output, read-only API requests, per-file archive lines and thread names |
+| `LOG_HTTP_REQUESTS` | `quiet` (default) skips the UI's `/api/status` polling, `/healthz`, static files and icons; `all` logs every request |
 
 See the top of `app.py` for the full list of tunables (GFS retention,
 verify sampling, pre/post-backup hooks, etc.) — every one is an
@@ -147,6 +149,18 @@ The GFS retention keep counts (`GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`,
 `GFS_MONTHLY_KEEP`) seed the defaults, but they can also be edited and saved
 from the **Settings → GFS Retention Policy** card in the UI; the saved values
 are persisted and take precedence over the env vars.
+
+### Container logs
+
+`docker logs` (Unraid: the container's **Logs** button) shows what the app
+is actually doing: a startup summary of the configuration, every changer/drive
+command it runs (`$ mtx -f /dev/sg12 load 3 0 -- ok in 41.2s`) and any that
+fail with their exit code and error, the tar/mbuffer/dd pipeline for each
+backup, restore, verify and index read, every job's progress messages, UI
+button presses and MQTT commands with their result, and full tracebacks for
+unexpected errors. The UI's own 5-second status polling and the healthcheck
+are left out so they don't drown everything else; see `LOG_LEVEL` and
+`LOG_HTTP_REQUESTS` above to change that.
 
 ### Health check
 

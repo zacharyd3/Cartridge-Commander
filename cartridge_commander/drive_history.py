@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, List, Optional
 from .config import CHANGER, COMMAND_TIMEOUT, TAPE
 from . import state as shared_state
+from .logsetup import get_logger
 
 
 def _load_drive_history() -> None:
@@ -441,9 +442,14 @@ def _check_drive_change() -> None:
     current_vol = drive.get("volume_tag", "") if not drive.get("empty") else ""
     if current_vol and current_vol != shared_state._drive_loaded_vol:
         # New tape appeared
+        get_logger("drive").info(
+            "Drive now holds %s (from slot %s).", current_vol,
+            drive.get("loaded_from_slot") or drive.get("effective_loaded_slot") or "?",
+        )
         _record_tape_loaded(current_vol)
     elif not current_vol and shared_state._drive_loaded_vol:
         # Tape was removed
+        get_logger("drive").info("Drive is now empty (%s unloaded).", shared_state._drive_loaded_vol)
         _record_tape_unloaded(shared_state._drive_loaded_vol)
 
 # ---------------------------------------------------------------------------

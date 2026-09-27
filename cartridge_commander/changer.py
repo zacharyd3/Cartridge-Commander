@@ -6,6 +6,9 @@ from dataclasses import asdict
 from typing import Any, Dict, Optional
 from .config import BACKUP_ROOT, CHANGER, HAS_MAIL_SLOT, MAGAZINE_SIZE, RESTORE_ROOT, TAPE
 from . import state as shared_state
+from .logsetup import get_logger
+
+_log = get_logger("changer")
 
 
 MTX_SLOT_RE  = re.compile(r"^\s*Storage Element\s+(\d+)(\s+IMPORT/EXPORT)?\s*:\s*(Full|Empty)(?:\s*:\s*VolumeTag\s*=\s*(.*?))?\s*$", re.I)
@@ -223,6 +226,8 @@ def collect_state():
 def refresh_state():
     from .drive_history import _check_drive_change
     from .state import now_ts, snapshot_backup_job, snapshot_inventory_job, snapshot_restore_job
+    prev_ok = shared_state._state_cache.get("ok")
+    prev_error = shared_state._state_cache.get("last_error")
     try:
         shared_state._state_cache = collect_state()
     except Exception as e:
@@ -231,8 +236,28 @@ def refresh_state():
                         "restore_job": snapshot_restore_job(),
                         "inventory_job": snapshot_inventory_job(),
                         "last_error": str(e), "last_updated": now_ts()}
+    _log_state_transition(prev_ok, prev_error)
     _check_drive_change()
     return shared_state._state_cache
+
+def _log_state_transition(prev_ok, prev_error) -> None:
+    """Log library reachability changes once, not on every 5 s UI poll."""
+    cache = shared_state._state_cache
+    err = cache.get("last_error")
+    if not cache.get("ok"):
+        if err != prev_error:
+            _log.error("Library status query failed (%s / %s): %s", CHANGER, TAPE, err)
+        return
+    s = cache.get("summary") or {}
+    if not prev_ok:
+        _log.info(
+            "Library %s: %s of %s slots full, drive %s%s%s.",
+            "reachable again" if prev_error else "online",
+            s.get("full_slots"), s.get("total_slots"),
+            f"loaded with {s.get('loaded_volume') or '?'} (slot {s.get('loaded_slot')})" if s.get("loaded") else "empty",
+            "" if s.get("online") else ", not ready",
+            f", mail slot {s.get('import_export_tag') or 'empty'}" if s.get("has_mail_slot") else "",
+        )
 
 def get_mail_slot_info(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return the import/export (mail) slot dict from a state snapshot, or None.
