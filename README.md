@@ -147,7 +147,7 @@ environment variable with a sane default.
 
 The GFS retention keep counts (`GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`,
 `GFS_MONTHLY_KEEP`) seed the defaults, but they can also be edited and saved
-from the **Settings → GFS Retention Policy** card in the UI; the saved values
+from the **Retention** page in the UI; the saved values
 are persisted and take precedence over the env vars.
 
 ### Container logs
