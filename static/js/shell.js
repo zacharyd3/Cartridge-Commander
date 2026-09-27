@@ -108,7 +108,7 @@ function pageWantsLiveRefresh(page, prevState, nextState){
 }
 
 const BACKUP_PHASE_LABEL = {
-  idle:'Idle', preparing:'Preparing', selecting_tape:'Selecting tape', loading_tape:'Loading tape',
+  idle:'Idle', scanning:'Scanning sources', preparing:'Preparing', selecting_tape:'Selecting tape', loading_tape:'Loading tape',
   pre_hook:'Running pre-backup hook', erasing:'Erasing tape', rewinding:'Rewinding',
   streaming:'Writing to tape', indexing:'Building index', verifying:'Verifying',
   cancelling:'Cancelling', unloading:'Unloading tape', post_hook:'Running post-backup hook',

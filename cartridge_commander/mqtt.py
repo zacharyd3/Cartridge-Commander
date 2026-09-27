@@ -487,7 +487,7 @@ def _handle_mqtt_cmd(topic, payload):  # noqa: C901
     from .state import TapeError, is_cleaning_volume_tag, log_action, now_ts, request_inventory_pause, request_inventory_resume, request_inventory_stop, run_cmd
     from .inventory_worker import inventory_worker
     from .changer import refresh_state
-    from .backup_worker import backup_worker
+    from .backup_worker import start_backup_thread
     suffix  = topic.split("/")[-1]
     payload = payload.strip()
 
@@ -542,14 +542,10 @@ def _handle_mqtt_cmd(topic, payload):  # noqa: C901
         # Use paths from first enabled schedule, or fall back to BACKUP_ROOT
         paths = next((s.get("paths",[]) for s in scheds if s.get("enabled")), [BACKUP_ROOT])
         label = _mqtt_runtime_cfg.get("backup_label","") or f"HA {mode} backup"
-        with shared_state._backup_lock: busy = shared_state._backup_job.get("running")
-        if busy:
-            log_action("mqtt_backup",False,"Backup already running")
-        else:
+        if start_backup_thread(paths, backup_mode=mode, label=label):
             log_action("mqtt_backup",True,f"Starting {mode} backup via HA")
-            threading.Thread(target=backup_worker, args=(paths,),
-                             kwargs={"backup_mode": mode, "label": label},
-                             daemon=True).start()
+        else:
+            log_action("mqtt_backup",False,"Backup already running")
 
     elif suffix == "backup_start":
         try:
@@ -558,11 +554,7 @@ def _handle_mqtt_cmd(topic, payload):  # noqa: C901
             mode  = d.get("mode","full")
             label = d.get("label","") or _mqtt_runtime_cfg.get("backup_label","")
             if paths:
-                with shared_state._backup_lock:
-                    if not shared_state._backup_job.get("running"):
-                        threading.Thread(target=backup_worker, args=(paths,),
-                                        kwargs={"backup_mode": mode, "label": label},
-                                        daemon=True).start()
+                start_backup_thread(paths, backup_mode=mode, label=label)
         except Exception as e: log_action("mqtt_backup_start",False,str(e))
 
     elif suffix == "stop_backup":

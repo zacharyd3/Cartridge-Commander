@@ -208,8 +208,8 @@ async function runSchedNow(id){
   if(!confirm(`Run "${s.label||'this schedule'}" now?`)) return;
   // Optimistically update backup_job and jump to the Backup page, mirroring startBackup().
   if(G.state) G.state.backup_job = {
-    ...G.state.backup_job, running: true, status: 'selecting_tape',
-    last_message: 'Starting backup — selecting tape…',
+    ...G.state.backup_job, running: true, status: 'scanning',
+    last_message: 'Starting backup — scanning sources…',
     percent: 0, bytes_written: 0, speed_bps: 0, eta_seconds: null,
   };
   showPage('backup');

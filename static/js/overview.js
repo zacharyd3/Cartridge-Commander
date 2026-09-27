@@ -47,7 +47,7 @@ function librarySubtitle(s){
 // ── Active operation banner ─────────────────────────────────────────────────
 function overviewBanner(){
   const bk = G.state?.backup_job || {};
-  const activePhases = ['selecting_tape','loading_tape','pre_hook','erasing','streaming','indexing','verifying','rewinding','unloading','post_hook','cancelling','preparing'];
+  const activePhases = ['scanning','selecting_tape','loading_tape','pre_hook','erasing','streaming','indexing','verifying','rewinding','unloading','post_hook','cancelling','preparing'];
   const showBk = !G.activeAction && bk.running && activePhases.includes(bk.status||'');
   if(G.activeAction){
     const a = G.activeAction;
