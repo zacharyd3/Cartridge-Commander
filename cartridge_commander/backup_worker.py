@@ -308,8 +308,19 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
                 set_backup_state(bytes_total=scanned + so_far,
                                  last_message=f"Scanning sources… {bytes_human(scanned + so_far)} found")
 
+        _seen_inodes: set = set()   # hardlinks count once across all sources, as in tar
         for p in selected:
-            scanned += estimate_path_size(p, progress=_scan_progress, exclude=excluded)
+            _breakdown: Dict[str, int] = {}
+            _src_bytes = estimate_path_size(p, progress=_scan_progress, exclude=excluded,
+                                            seen=_seen_inodes, breakdown=_breakdown)
+            scanned += _src_bytes
+            # Largest entries first, so an unexpectedly large total shows where it comes from.
+            _top = sorted(_breakdown.items(), key=lambda kv: kv[1], reverse=True)[:10]
+            _detail = ", ".join(f"{os.path.basename(k)} {bytes_human(v)}" for k, v in _top if v > 0)
+            _more = len(_breakdown) - len(_top)
+            append_backup_log(f"  {p}: {bytes_human(_src_bytes)}"
+                              + (f" — largest: {_detail}" if _detail else "")
+                              + (f" (+{_more} more)" if _more > 0 else ""), level="minimal")
             set_backup_state(bytes_total=scanned)
             if shared_state._stop_requested:
                 raise _ScanCancelled()
