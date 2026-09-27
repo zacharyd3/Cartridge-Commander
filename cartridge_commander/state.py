@@ -212,6 +212,27 @@ def append_restore_log(msg):   _insert_log(_restore_job, _restore_lock, msg, "re
 def append_inventory_log(msg): _insert_log(_inventory_job, _inventory_lock, msg, "inventory")
 def set_backup_state(**kw):
     with _backup_lock:   _backup_job.update(kw)
+def claim_backup_job(paths: List[str], log_level: Optional[str] = None) -> bool:
+    """Atomically mark a backup as started; False if one is already active.
+
+    Callers claim *before* spawning backup_worker so the job reads as running
+    the instant the request returns -- sizing the sources can take minutes on
+    large or remote shares, and that gap let a second backup start on top.
+    """
+    global _stop_requested
+    with _backup_lock:
+        if _backup_job.get("running"):
+            return False
+        _backup_job.update(
+            running=True, status="scanning", selected_paths=list(paths),
+            bytes_total=0, bytes_written=0, percent=0.0,
+            speed_bps=0.0, eta_seconds=None,
+            started_at=now_ts(), finished_at=None,
+            last_message="Scanning sources…", log=[], error=None,
+            log_level=normalize_backup_log_level(log_level),
+        )
+        _stop_requested = False
+    return True
 def set_restore_state(**kw):
     with _restore_lock:  _restore_job.update(kw)
 def set_inventory_state(**kw):

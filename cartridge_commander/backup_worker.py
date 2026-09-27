@@ -242,6 +242,28 @@ def _scan_tar_log_for_skips(log_path: str) -> Dict[str, Any]:
     return {"count": count, "items": items, "fatal": fatal}
 
 
+class _ScanCancelled(Exception):
+    """Raised from the source-size scan when the user cancels the backup."""
+
+
+def start_backup_thread(paths: List[str], backup_mode: str = "full", label: str = "",
+                        log_level: str = BACKUP_LOG_LEVEL_DEFAULT) -> bool:
+    """Claim the backup job and run backup_worker in the background.
+
+    The claim happens synchronously, so the job already reads as running when
+    this returns; False means another backup is active and nothing started.
+    """
+    if not shared_state.claim_backup_job(paths, log_level=log_level):
+        return False
+    threading.Thread(
+        target=backup_worker,
+        args=(paths,),
+        kwargs={"backup_mode": backup_mode, "label": label, "log_level": log_level},
+        daemon=True,
+    ).start()
+    return True
+
+
 def backup_worker(paths: List[str], backup_mode: str = "full",
                   job_id: str = "", label: str = "", log_level: str = BACKUP_LOG_LEVEL_DEFAULT) -> None:
     from .records import add_backup_record
@@ -253,12 +275,59 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
     from .changer import ensure_under_backup_root, estimate_path_size, refresh_state
     from .notify import notify_backup_failure, notify_backup_success
     from .settings import build_backup_dirname
-    selected = [ensure_under_backup_root(p) for p in paths]
-    rels     = [os.path.relpath(p, "/") for p in selected]
-    total_size = sum(estimate_path_size(p) for p in selected)
+    # The caller has already claimed the job (claim_backup_job), so it reads as
+    # running/"scanning" while the sources are sized -- which can take minutes
+    # on large or remote shares. Anything that fails before the main try block
+    # below must release the claim, or the job would read as running forever.
+    log_level = normalize_backup_log_level(log_level)
+    try:
+        selected = [ensure_under_backup_root(p) for p in paths]
+        rels     = [os.path.relpath(p, "/") for p in selected]
+        set_backup_state(status="scanning", selected_paths=selected, log_level=log_level,
+                         last_message=f"Scanning {len(selected)} source(s)…")
+        append_backup_log(f"Scanning {len(selected)} source(s) to estimate backup size…", level="minimal")
+        publish_state_to_mqtt(refresh_state())
+
+        scanned = 0
+        last_report = 0.0
+        def _scan_progress(so_far: int) -> None:
+            nonlocal last_report
+            if shared_state._stop_requested:
+                raise _ScanCancelled()
+            now = time.monotonic()
+            if now - last_report >= 1.0:
+                last_report = now
+                set_backup_state(bytes_total=scanned + so_far,
+                                 last_message=f"Scanning sources… {bytes_human(scanned + so_far)} found")
+
+        for p in selected:
+            scanned += estimate_path_size(p, progress=_scan_progress)
+            set_backup_state(bytes_total=scanned)
+            if shared_state._stop_requested:
+                raise _ScanCancelled()
+        total_size = scanned
+        append_backup_log(f"Scan complete — {bytes_human(total_size)} to back up.", level="minimal")
+
+        vol = (shared_state._state_cache.get("summary") or {}).get("loaded_volume", "")
+        if is_cleaning_volume_tag(vol):
+            raise TapeError(f"Tape {vol} is a cleaning tape and cannot be written to.")
+    except _ScanCancelled:
+        set_backup_state(running=False, status="cancelled", finished_at=now_ts(),
+                         eta_seconds=None, last_message="Backup cancelled while scanning sources.")
+        append_backup_log("Backup cancelled while scanning sources.")
+        log_action("backup", False, "Cancelled while scanning sources.")
+        publish_state_to_mqtt(refresh_state())
+        return
+    except Exception as e:
+        set_backup_state(running=False, status="failed", finished_at=now_ts(),
+                         error=str(e), last_message=f"Backup failed: {e}", eta_seconds=None)
+        append_backup_log(f"Backup failed: {e}")
+        log_action("backup", False, str(e))
+        log_traceback("backup", e)
+        publish_state_to_mqtt(refresh_state())
+        return
+
     start    = time.time()
-    shared_state._stop_requested = False
-    vol      = (shared_state._state_cache.get("summary") or {}).get("loaded_volume", "")
     if not job_id:
         job_id = f"{vol or 'nolabel'}_{int(start)}"
     record_id = str(int(start * 1000))
@@ -271,17 +340,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
     # Track whether we auto-loaded a tape so we can auto-unload it when done
     _auto_loaded_slot: Optional[int] = None
 
-    if is_cleaning_volume_tag(vol):
-        raise TapeError(f"Tape {vol} is a cleaning tape and cannot be written to.")
-
-    log_level = normalize_backup_log_level(log_level)
-    set_backup_state(
-        running=True, status="preparing", selected_paths=selected,
-        bytes_total=total_size, bytes_written=0, percent=0.0,
-        speed_bps=0.0, eta_seconds=None,
-        started_at=now_ts(), finished_at=None,
-        last_message="Preparing…", log=[], error=None, log_level=log_level,
-    )
+    set_backup_state(status="preparing", bytes_total=total_size, last_message="Preparing…")
     append_backup_log(f"Backup [{backup_mode}] for {len(selected)} path(s) on {vol or '(no tape)'}.", level="minimal")
     publish_state_to_mqtt(refresh_state())
 

@@ -5,12 +5,11 @@ import json
 import time
 import datetime
 import calendar
-import threading
 from .config import SCHEDULES_FILE
 from . import state as shared_state
 from .state import log_action, now_ts
 from .db import _db_get_json, _db_set_json, _prune_app_log
-from .backup_worker import backup_worker
+from .backup_worker import start_backup_thread
 
 
 def _load_schedules():
@@ -76,17 +75,10 @@ def scheduler_loop():
             nr = s.get("next_run")
             if nr and now >= nr:
                 paths, label = s.get("paths",[]), s.get("label","?")
-                with shared_state._backup_lock: busy = shared_state._backup_job.get("running")
-                if busy:
-                    log_action("scheduler", False, f"'{label}' skipped — backup running.")
-                else:
+                if start_backup_thread(paths, backup_mode=s.get("backup_mode", "full"), label=label):
                     log_action("scheduler", True, f"'{label}' fired.")
-                    threading.Thread(
-                        target=backup_worker,
-                        args=(paths,),
-                        kwargs={"backup_mode": s.get("backup_mode", "full"), "label": label},
-                        daemon=True,
-                    ).start()
+                else:
+                    log_action("scheduler", False, f"'{label}' skipped — backup running.")
                 with shared_state._schedules_lock:
                     for x in shared_state._schedules:
                         if x.get("id") == s.get("id"):

@@ -2,9 +2,9 @@
 // ══════════════════════════════════════════════════════════════════════════════
 // BACKUP PAGE
 // ══════════════════════════════════════════════════════════════════════════════
-const BACKUP_PREP_PHASES = new Set(['preparing','selecting_tape','loading_tape','pre_hook','erasing']);
+const BACKUP_PREP_PHASES = new Set(['scanning','preparing','selecting_tape','loading_tape','pre_hook','erasing']);
 const BACKUP_STEPS = [
-  {label:'Select tape',     phases:['preparing','selecting_tape']},
+  {label:'Scan & pick tape', phases:['scanning','preparing','selecting_tape']},
   {label:'Load tape',       phases:['loading_tape']},
   {label:'Pre-backup hook', phases:['pre_hook','erasing']},
   {label:'Write to tape',   phases:['streaming','cancelling']},
@@ -247,8 +247,8 @@ async function startBackup(){
   // Optimistically update backup_job state so the page renders something useful before
   // the first real poll comes back — the backend may spend 30–60s loading a tape.
   if(G.state) G.state.backup_job = {
-    ...G.state.backup_job, running: true, status: 'selecting_tape',
-    last_message: 'Starting backup — selecting tape…',
+    ...G.state.backup_job, running: true, status: 'scanning',
+    last_message: 'Starting backup — scanning sources…',
     percent: 0, bytes_written: 0, speed_bps: 0, eta_seconds: null,
   };
   if(G.page !== 'backup') showPage('backup'); else renderPage();

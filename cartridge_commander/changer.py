@@ -363,15 +363,24 @@ def get_cleaning_slot() -> Optional[int]:
     return (shared_state._state_cache.get("summary") or {}).get("cleaning_slot")
 
 
-def estimate_path_size(path):
+def estimate_path_size(path, progress=None):
+    """Sum file sizes under ``path``.
+
+    ``progress(bytes_so_far)`` is called every 1000 files, so a long walk can
+    report its running total (or raise to abort).
+    """
     if os.path.isfile(path):
         try: return os.path.getsize(path)
         except OSError: return 0
     total = 0
+    files = 0
     for r, ds, fs in os.walk(path, onerror=lambda e: None, followlinks=False):
         for n in fs:
             try: total += os.path.getsize(os.path.join(r, n))
             except OSError: pass
+            files += 1
+            if progress and files % 1000 == 0:
+                progress(total)
     return total
 
 # ---------------------------------------------------------------------------

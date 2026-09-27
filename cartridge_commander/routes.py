@@ -20,7 +20,7 @@ from .drive_history import _save_last_known_loaded_slot, build_loaded_tape_space
 from .records import get_backup_records, get_tape_health, gfs_classify, gfs_get_recyclable, gfs_stream_key
 from .mqtt import publish_state_to_mqtt
 from .scheduler import _save_schedules, _update_next_run
-from .backup_worker import backup_worker
+from .backup_worker import start_backup_thread
 from .restore_worker import restore_worker
 from .format_worker import format_worker
 from .inventory_worker import inventory_worker
@@ -464,18 +464,12 @@ def api_backup_start():
     paths = p.get("paths") or []
     if not isinstance(paths, list) or not paths:
         return jsonify({"ok": False, "error": "Pick at least one folder."}), 400
-    with shared_state._backup_lock:
-        if shared_state._backup_job.get("running"):
-            return jsonify({"ok": False, "error": "Backup already running."}), 409
     validated = [ensure_under_backup_root(x) for x in paths]
     log_level = normalize_backup_log_level(p.get("log_level"))
-    threading.Thread(
-        target=backup_worker,
-        args=(validated,),
-        kwargs={"backup_mode": p.get("mode", "full"), "label": p.get("label", ""), "log_level": log_level},
-        daemon=True,
-    ).start()
-    return jsonify({"ok": True, "detail": "Backup started.", "backup_job": snapshot_backup_job()})
+    if not start_backup_thread(validated, backup_mode=p.get("mode", "full"),
+                               label=p.get("label", ""), log_level=log_level):
+        return jsonify({"ok": False, "error": "Backup already running."}), 409
+    return jsonify({"ok": True, "detail": "Backup started — scanning sources.", "backup_job": snapshot_backup_job()})
 
 @app.post("/api/backup/stop")
 def api_backup_stop():
