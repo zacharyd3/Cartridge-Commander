@@ -41,7 +41,7 @@ def _ha_notify(title: str, message: str) -> None:
 
 
 def notify_backup_success(vol: str, paths: List[str], bw: int, elapsed: float,
-                           verified: bool, verify_errors: int) -> None:
+                           verified: bool, verify_errors: int, skipped: int = 0) -> None:
     from .settings import _render_notify_template, get_notify_config
     from .state import bytes_human, secs_human
     if not get_notify_config()["on_backup_success"]:
@@ -53,11 +53,13 @@ def notify_backup_success(vol: str, paths: List[str], bw: int, elapsed: float,
         vol=vol, paths=", ".join(paths),
         written=bytes_human(bw), duration=secs_human(int(elapsed)),
         speed=bytes_human(bw / max(elapsed, 1)),
-        verified=ver_str, errors=str(verify_errors), error="",
+        verified=ver_str, errors=str(verify_errors), error="", skipped=str(skipped),
         time=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
     title = _render_notify_template("backup_success_title", **tokens)
     body  = _render_notify_template("backup_success_body",  **tokens)
+    if skipped and "{skipped}" not in (get_notify_config()["templates"].get("backup_success_body") or ""):
+        body += f"\n⚠️ Skipped {skipped} unreadable item(s) — see backup log."
     _ha_notify(title, body)
 
 
@@ -67,7 +69,7 @@ def notify_backup_failure(vol: str, paths: List[str], error: str) -> None:
         return
     tokens = dict(
         vol=vol, paths=", ".join(paths), error=error,
-        written="", duration="", speed="", verified="", errors="",
+        written="", duration="", speed="", verified="", errors="", skipped="",
         time=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
     title = _render_notify_template("backup_failure_title", **tokens)

@@ -204,6 +204,44 @@ def _find_return_slot(vol: str, exclude_slot: Optional[int] = None) -> Optional[
 # Backup worker
 # ---------------------------------------------------------------------------
 
+# tar diagnostics that mean "this one file/folder couldn't be read and was left
+# out" — e.g. Unraid appdata owned by another container's UID, or a file that
+# vanished mid-backup.  With --ignore-failed-read tar reports these as warnings
+# and keeps going; we collect them so the user can see what was skipped.
+_TAR_SKIP_MARKERS = (
+    "Cannot open", "Cannot stat", "Cannot read", "Cannot savedir",
+    "Cannot readlink", "Read error", "Permission denied",
+)
+_SKIPPED_ITEMS_KEEP = 200
+
+
+def _scan_tar_log_for_skips(log_path: str) -> Dict[str, Any]:
+    """Scan tar's stderr log for files/folders tar could not read.
+
+    Returns {"count": int, "items": [first N "path: reason" strings],
+    "fatal": bool}.  ``fatal`` is True when tar hit an unrecoverable error
+    (the archive itself is broken), which must still fail the backup.
+    """
+    count, items, fatal = 0, [], False
+    try:
+        with open(log_path, "rb") as fh:
+            for raw in fh:
+                if not raw.startswith(b"tar: "):
+                    continue
+                line = raw.decode(errors="ignore").strip()[5:]
+                if "Error is not recoverable" in line:
+                    fatal = True
+                    continue
+                if not any(m in line for m in _TAR_SKIP_MARKERS):
+                    continue
+                count += 1
+                if len(items) < _SKIPPED_ITEMS_KEEP:
+                    items.append(line.replace("Warning: ", "", 1))
+    except OSError:
+        pass
+    return {"count": count, "items": items, "fatal": fatal}
+
+
 def backup_worker(paths: List[str], backup_mode: str = "full",
                   job_id: str = "", label: str = "", log_level: str = BACKUP_LOG_LEVEL_DEFAULT) -> None:
     from .records import add_backup_record
@@ -410,7 +448,11 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
         os.close(_tar_log_fd)
 
         # tar: write stdout into the pipeline; verbose file list goes to a temp log file
-        tar_cmd = (["tar", "-C", "/", "-cvf", "-"]
+        # --ignore-failed-read: a file or folder tar can't read (permission
+        # denied, vanished mid-backup, …) is skipped with a warning instead of
+        # making tar exit 2 and failing the whole backup.  Skipped items are
+        # reported once tar finishes.
+        tar_cmd = (["tar", "-C", "/", "-cvf", "-", "--ignore-failed-read"]
                    + _SPARSE_ARGS + _XATTR_ARGS + extra_args + rels)
 
         # dd: final writer — large block size, write directly to tape device.
@@ -640,6 +682,14 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
                                 line = line_b.decode(errors="ignore").strip()
                                 if not line:
                                     continue
+                                if line.startswith("tar: "):
+                                    # tar diagnostic, not an archived member.
+                                    # Surface skipped items live; everything
+                                    # else (e.g. "Directory is new") is noise.
+                                    if (backup_log_allows("normal")
+                                            and any(m in line for m in _TAR_SKIP_MARKERS)):
+                                        append_backup_log(line, level="normal")
+                                    continue
                                 _tar_entry_count[0] += 1
                                 _tar_last_entry[0] = line
                                 if backup_log_allows("verbose"):
@@ -844,9 +894,23 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
                 run_hook(POST_BACKUP_HOOK, "post-backup (after cancel)")
             publish_state_to_mqtt(refresh_state())
             return
+        # Collect everything tar had to skip (unreadable files/folders).
+        _skips = _scan_tar_log_for_skips(_tar_log_path)
+        skipped_count = _skips["count"]
+        skipped_items = _skips["items"]
+
         # tar exit codes: 0 = success, 1 = warnings (files changed/skipped), 2+ = fatal.
         # rc==1 is normal for live filesystems — treat as success.
-        if rc not in (0, 1):
+        # rc==2 caused only by unreadable files (which --ignore-failed-read should
+        # already downgrade, but not every read failure is covered on every tar
+        # version) is also a success: dd finished cleanly, so the archive is
+        # complete apart from the skipped items.
+        if rc == 2 and skipped_count and not _skips["fatal"]:
+            append_backup_log(
+                "tar exited 2 only because some items could not be read — continuing.",
+                level="normal",
+            )
+        elif rc not in (0, 1):
             # Use real tar output from log file, not dd progress lines
             if _tar_error_lines:
                 append_backup_log(f"tar stderr: {chr(10).join(_tar_error_lines[-20:])}", level="minimal")
@@ -855,6 +919,17 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
         elif rc == 1 and _tar_error_lines:
             # Log warnings but continue
             append_backup_log(f"tar completed with warnings (rc=1): {_tar_error_lines[-1]}", level="normal")
+
+        if skipped_count:
+            append_backup_log(
+                f"⚠ Skipped {skipped_count:,} item(s) that could not be read "
+                "(e.g. permission denied) — the rest of the backup continued:",
+                level="minimal",
+            )
+            for _item in skipped_items[:50]:
+                append_backup_log(f"  skipped: {_item}", level="minimal")
+            if skipped_count > 50:
+                append_backup_log(f"  …and {skipped_count - 50:,} more.", level="minimal")
 
         append_backup_log(f"Tar complete. Wrote {bytes_human(bw)}.", level="minimal")
         # Do NOT re-fetch vol from state_cache here — by this point the state cache may
@@ -997,12 +1072,14 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
             run_hook(POST_BACKUP_HOOK, "post-backup")
 
         elapsed_total = max(time.time() - start, 0.001)
+        _done_msg = (f"Backup completed — {skipped_count:,} unreadable item(s) skipped."
+                     if skipped_count else "Backup completed successfully.")
         set_backup_state(
             running=False, status="completed", bytes_written=bw, percent=100.0,
             speed_bps=bw / elapsed_total, eta_seconds=0,
-            finished_at=now_ts(), last_message="Backup completed successfully.", error=None,
+            finished_at=now_ts(), last_message=_done_msg, error=None,
         )
-        append_backup_log("Backup completed successfully.")
+        append_backup_log(_done_msg)
         log_action("backup", True, f"Completed for {', '.join(selected)}", {"bytes_written": bw})
         _record_backup_done(vol, bw)
 
@@ -1020,12 +1097,15 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
             "speed_bps": bw / elapsed_total,
             "verified": verified,
             "verify_errors": verify_errors,
+            "skipped_count": skipped_count,
+            "skipped_items": skipped_items,
             "log_level": log_level,
             "backup_dirname": _backup_dirname,
         })
 
         # ── Notify ───────────────────────────────────────────────────────────
-        notify_backup_success(vol, selected, bw, elapsed_total, verified, verify_errors)
+        notify_backup_success(vol, selected, bw, elapsed_total, verified, verify_errors,
+                              skipped=skipped_count)
 
     except Exception as e:
         elapsed_total = max(time.time() - start, 0.001)

@@ -809,6 +809,16 @@ def api_schedules_update(sid):
     auth = require_password()
     if auth is not None: return auth
     p = request.get_json(silent=True) or {}
+    if "paths" in p and (not isinstance(p["paths"], list) or not p["paths"]):
+        return jsonify({"ok":False,"error":"Select at least one file or folder."}), 400
+    if "mode" in p and p["mode"] not in ("daily","weekly","monthly"):
+        return jsonify({"ok":False,"error":f"Invalid frequency: {p['mode']}"}), 400
+    try:
+        for k in ["hour","minute","day_of_week","day_of_month"]:
+            if k in p: p[k] = int(p[k])
+    except (TypeError, ValueError):
+        return jsonify({"ok":False,"error":"Time and day fields must be numbers."}), 400
+    if "label" in p: p["label"] = str(p["label"]).strip() or "Scheduled backup"
     found = None
     with shared_state._schedules_lock:
         for s in shared_state._schedules:

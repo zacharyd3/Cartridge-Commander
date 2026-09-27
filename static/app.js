@@ -10,6 +10,8 @@ let G = {
   backupPaths: [],
   schedPaths: [],
   schedBrowser: null,
+  schedEditId: null,    // id of the schedule loaded into the form for editing
+
   backupBrowser: null,
   restoreBrowser: null,
   tdSlot: null,
@@ -95,6 +97,7 @@ function el(tag, cls, html){
 }
 function setHTML(id,html){ const e=$(id); if(e) e.innerHTML=html; }
 function setTxt(id,txt){ const e=$(id); if(e) e.textContent=txt; }
+function escHtml(v){ return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function captureScheduleDraft(){
   G.scheduleDraft = {
@@ -117,7 +120,7 @@ function applyScheduleDraft(){
   if($('sc-hour')) $('sc-hour').value = d.hour ?? '2';
   if($('sc-min')) $('sc-min').value = d.min ?? '0';
   updateSchedForm();
-  if($('sc-result') && d.result) $('sc-result').textContent = d.result;
+  if($('sc-result')) $('sc-result').textContent = d.result ?? '';
 }
 
 
@@ -1778,9 +1781,11 @@ function renderSchedulePage(c){
   listCard.id='sched-list-card';
   c.appendChild(listCard);
 
+  const editing = !!G.schedEditId;
   const newCard = el('div','card');
+  newCard.id='sched-form-card';
   newCard.innerHTML=`
-    <div class="card-title">New Schedule</div>
+    <div class="card-title">${editing?'Edit Schedule':'New Schedule'}</div>
     <div class="form-group"><label>Label</label><input id="sc-label" placeholder="Weekly NAS backup"/></div>
     <div class="form-group"><label>Frequency</label>
       <select id="sc-mode" onchange="updateSchedForm()">
@@ -1812,7 +1817,10 @@ function renderSchedulePage(c){
       <button class="btn sm" onclick="schedBrowseRoot()">Root</button>
     </div>
     <div class="btn-row mt12">
-      <button class="btn success" onclick="createSchedule()">+ Add Schedule</button>
+      ${editing
+        ? `<button class="btn success" onclick="saveSchedule()">💾 Save Changes</button>
+           <button class="btn" onclick="cancelSchedEdit()">Cancel</button>`
+        : `<button class="btn success" onclick="saveSchedule()">+ Add Schedule</button>`}
     </div>
     <div id="sc-result" class="text-sm mt8" style="min-height:18px;"></div>`;
   c.appendChild(newCard);
@@ -1884,7 +1892,7 @@ async function loadSchedules(){
     if(s.mode==='daily') when=`Daily at ${String(s.hour).padStart(2,'0')}:${String(s.minute).padStart(2,'0')}`;
     else if(s.mode==='weekly') when=`Every ${DOW[s.day_of_week]||'?'} at ${String(s.hour).padStart(2,'0')}:${String(s.minute).padStart(2,'0')}`;
     else when=`Monthly day ${s.day_of_month} at ${String(s.hour).padStart(2,'0')}:${String(s.minute).padStart(2,'0')}`;
-    const item=el('div','sched-item');
+    const item=el('div','sched-item'+(s.id===G.schedEditId?' editing':''));
     item.innerHTML=`
       <div class="sched-info">
         <div class="sched-name">${s.label||'Backup'}</div>
@@ -1893,12 +1901,42 @@ async function loadSchedules(){
       </div>
       <label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSched('${s.id}',this.checked)"/><div class="toggle-track"></div></label>
       <button class="btn sm primary" onclick="runSchedNow('${s.id}')" ${backupRunning?'disabled':''} aria-label="Run schedule now" title="${backupRunning?'A backup is already running':'Run this schedule now'}">▶ Run Now</button>
+      <button class="btn sm" onclick="editSched('${s.id}')" aria-label="Edit schedule" title="Edit schedule">✏️</button>
       <button class="btn sm danger" onclick="deleteSched('${s.id}')" aria-label="Delete schedule" title="Delete schedule">🗑</button>`;
     card.appendChild(item);
   }
 }
 
-async function createSchedule(){
+const SCHED_DRAFT_DEFAULT = {label:'', mode:'weekly', dow:'0', dom:'1', hour:'2', min:'0', result:''};
+
+// renderPage() snapshots the form's current DOM values into G.scheduleDraft
+// first, so a new draft has to be applied after the re-render.
+function renderScheduleWithDraft(draft){
+  renderPage();
+  G.scheduleDraft = draft;
+  applyScheduleDraft();
+}
+
+function editSched(id){
+  const s=(G.schedules||[]).find(x=>x.id===id);
+  if(!s) return;
+  G.schedEditId = id;
+  G.schedPaths = [...(s.paths||[])];
+  renderScheduleWithDraft({
+    label: s.label||'', mode: s.mode||'weekly',
+    dow: String(s.day_of_week??0), dom: String(s.day_of_month??1),
+    hour: String(s.hour??2), min: String(s.minute??0), result: '',
+  });
+  $('sched-form-card')?.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function cancelSchedEdit(){
+  G.schedEditId = null;
+  G.schedPaths = [];
+  renderScheduleWithDraft({...SCHED_DRAFT_DEFAULT});
+}
+
+async function saveSchedule(){
   captureScheduleDraft();
   if(!G.schedPaths.length){ $('sc-result').textContent='Select at least one file or folder.'; return; }
   const payload={
@@ -1910,18 +1948,25 @@ async function createSchedule(){
     day_of_week:parseInt($('sc-dow')?.value||'0'),
     day_of_month:parseInt($('sc-dom')?.value||'1'),
   };
-  const data=await api('/api/schedules','POST',payload);
+  const editing = !!G.schedEditId;
+  const data = editing
+    ? await api(`/api/schedules/${G.schedEditId}`,'PUT',payload)
+    : await api('/api/schedules','POST',payload);
   if(data.ok){
-    $('sc-result').textContent='✓ Schedule created!';
+    const msg = editing ? '✓ Schedule updated!' : '✓ Schedule created!';
+    G.schedEditId=null;
     G.schedPaths=[];
-    G.scheduleDraft = {label:'', mode:'weekly', dow:'0', dom:'1', hour:'2', min:'0', result:'✓ Schedule created!'};
-    await loadSchedules(); renderSchedBrowser(); applyScheduleDraft();
+    renderScheduleWithDraft({...SCHED_DRAFT_DEFAULT, result:msg});
   } else {
     $('sc-result').textContent='❌ '+data.error;
   }
 }
 async function toggleSched(id,enabled){ await api(`/api/schedules/${id}`,'PUT',{enabled}); loadSchedules(); }
-async function deleteSched(id){ if(!confirm('Delete this schedule?')) return; await api(`/api/schedules/${id}`,'DELETE'); loadSchedules(); }
+async function deleteSched(id){
+  if(!confirm('Delete this schedule?')) return;
+  await api(`/api/schedules/${id}`,'DELETE');
+  if(G.schedEditId===id) cancelSchedEdit(); else loadSchedules();
+}
 
 async function runSchedNow(id){
   const s=(G.schedules||[]).find(x=>x.id===id);
@@ -1943,7 +1988,7 @@ async function runSchedNow(id){
   $('nav-backup')?.classList.add('active');
   renderPage();
 
-  const data=await api('/api/backup/start','POST',{paths:s.paths, mode:s.mode, label:s.label});
+  const data=await api('/api/backup/start','POST',{paths:s.paths, mode:s.backup_mode||'full', label:s.label});
 
   if(!data.ok){
     if(G.state) G.state.backup_job = {...G.state.backup_job, running:false, status:'idle'};
@@ -2092,7 +2137,7 @@ function renderSettingsPage(c){
           <span class="mono">{duration}</span> <span class="mono">{speed}</span>
           <span class="mono">{verified}</span> <span class="mono">{errors}</span>
           <span class="mono">{error}</span> <span class="mono">{paths}</span>
-          <span class="mono">{time}</span>
+          <span class="mono">{skipped}</span> <span class="mono">{time}</span>
         </div>
         ${[
           ['backup_success_title', '✅ Backup success — title'],
@@ -2696,6 +2741,7 @@ async function loadBackupRecords(){
       ${dirname?`<div style="font-size:10px;color:var(--blue);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="Archive folder name inside the backup">
         📁 ${dirname}/
       </div>`:''}
+      ${r.skipped_count?`<div class="text-sm c-amber" title="${escHtml((r.skipped_items||[]).join('\n'))}">⚠ ${r.skipped_count} unreadable item(s) skipped</div>`:''}
       ${r.error?`<div class="text-sm c-red">${r.error}</div>`:''}
     </div>`;
   }
