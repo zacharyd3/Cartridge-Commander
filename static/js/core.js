@@ -11,6 +11,7 @@ let G = {
   page: 'library',
   backupPaths: [],
   schedPaths: [],
+  schedExcludes: [],    // paths inside schedPaths that the schedule leaves out
   schedBrowser: null,
   schedEditId: null,    // id of the schedule loaded into the form for editing
   schedules: null,

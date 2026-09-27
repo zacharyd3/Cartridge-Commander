@@ -296,6 +296,28 @@ def ensure_under_backup_root(raw):
     if not os.path.exists(resolved): raise TapeError(f"Path does not exist: {raw}")
     return resolved
 
+def normalize_excludes(excludes, sources):
+    """Validate paths to leave out of a backup of ``sources``.
+
+    Each exclude must sit strictly inside one of the sources (after resolving
+    symlinks, as the sources are).  It need not exist: a folder deleted after
+    the schedule was saved is simply nothing to skip.  Returns the resolved,
+    de-duplicated list.
+    """
+    from .state import TapeError
+    if excludes is None: return []
+    if not isinstance(excludes, list): raise TapeError("Excludes must be a list of paths.")
+    roots = [os.path.realpath(str(s).strip()) for s in sources if str(s).strip()]
+    out = []
+    for raw in excludes:
+        raw = str(raw or "").strip()
+        if not raw: continue
+        resolved = os.path.realpath(raw)
+        if not any(resolved.startswith(r.rstrip(os.sep) + os.sep) for r in roots):
+            raise TapeError(f"Excluded path is not inside a selected source: {raw}")
+        if resolved not in out: out.append(resolved)
+    return out
+
 def list_directories(path=None):
     base = ensure_under_backup_root(path or BACKUP_ROOT)
     dirs = []
@@ -363,19 +385,23 @@ def get_cleaning_slot() -> Optional[int]:
     return (shared_state._state_cache.get("summary") or {}).get("cleaning_slot")
 
 
-def estimate_path_size(path, progress=None):
-    """Sum file sizes under ``path``.
+def estimate_path_size(path, progress=None, exclude=None):
+    """Sum file sizes under ``path``, skipping anything in ``exclude``.
 
     ``progress(bytes_so_far)`` is called every 1000 files, so a long walk can
     report its running total (or raise to abort).
     """
+    exclude = set(exclude or ())
     if os.path.isfile(path):
         try: return os.path.getsize(path)
         except OSError: return 0
     total = 0
     files = 0
     for r, ds, fs in os.walk(path, onerror=lambda e: None, followlinks=False):
+        if exclude:
+            ds[:] = [d for d in ds if os.path.join(r, d) not in exclude]
         for n in fs:
+            if exclude and os.path.join(r, n) in exclude: continue
             try: total += os.path.getsize(os.path.join(r, n))
             except OSError: pass
             files += 1
