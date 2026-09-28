@@ -196,25 +196,25 @@ def gfs_classify(record: Dict[str, Any]) -> str:
     Classification is done within the record's own retention stream, using
     calendar windows (month / ISO week) rather than weekday checks so it stays
     stable regardless of which day backups run.
+
+    Failed, cancelled or still-running backups aren't restore points, so they
+    don't take a retention slot and are reported as ``"excluded"``.
     """
-    ts = record.get("started_at")
-    if not ts:
+    vol = record.get("volume_tag", "")
+    if record.get("status") != "completed" or not record.get("started_at") or not vol:
+        return "excluded"
+
+    if vol in set(gfs_get_recyclable()):
         return "expired"
 
-    vol = record.get("volume_tag", "")
-    recyclable_set = set(gfs_get_recyclable())
-
-    if vol and vol not in recyclable_set and record.get("status") == "completed":
-        cfg = get_gfs_config()
-        stream = _gfs_completed_streams().get(gfs_stream_key(record), [])
-        keep_monthly, keep_weekly, _keep_daily = _gfs_stream_keep(stream, cfg)
-        if vol in keep_monthly:
-            return "monthly"
-        if vol in keep_weekly:
-            return "weekly"
-        return "daily"
-
-    return "expired" if vol in recyclable_set else "daily"
+    cfg = get_gfs_config()
+    stream = _gfs_completed_streams().get(gfs_stream_key(record), [])
+    keep_monthly, keep_weekly, _keep_daily = _gfs_stream_keep(stream, cfg)
+    if vol in keep_monthly:
+        return "monthly"
+    if vol in keep_weekly:
+        return "weekly"
+    return "daily"
 
 
 def gfs_get_recyclable() -> List[str]:
