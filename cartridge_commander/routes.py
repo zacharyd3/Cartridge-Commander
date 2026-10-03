@@ -886,7 +886,9 @@ def api_gfs_status():
     if auth is not None: return auth
     recyclable = gfs_get_recyclable()
     with shared_state._backup_records_lock:
-        recs = list(shared_state._backup_records)
+        # Only completed backups are restore points; failed or cancelled runs
+        # are never retained, so classifying them would only mislead.
+        recs = [r for r in shared_state._backup_records if r.get("status") == "completed"]
     classified = [{"id": r.get("id"), "volume_tag": r.get("volume_tag"),
                    "started_at": r.get("started_at"), "status": r.get("status"),
                    "stream": gfs_stream_key(r) or "(unlabeled)",

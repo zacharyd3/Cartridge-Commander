@@ -86,7 +86,7 @@ function gfsSideHTML(){
           {v:counts.weekly, color:TIER_COLOR.weekly, label:'Weekly'},
           {v:counts.monthly, color:TIER_COLOR.monthly, label:'Monthly'},
           {v:counts.expired, color:TIER_COLOR.expired, label:'Recyclable'},
-        ], {center:recs.length, sub:'records', aria:`${counts.daily} daily, ${counts.weekly} weekly, ${counts.monthly} monthly, ${counts.expired} recyclable`})}
+        ], {center:recs.length, sub:'backups', aria:`${counts.daily} daily, ${counts.weekly} weekly, ${counts.monthly} monthly, ${counts.expired} recyclable`})}
         ${legendHTML([
           {color:TIER_COLOR.daily, label:'Daily', value:counts.daily},
           {color:TIER_COLOR.weekly, label:'Weekly', value:counts.weekly},
@@ -111,11 +111,10 @@ function gfsClassificationHTML(){
   const recs = (G.gfs?.records || []).slice(0,30);
   if(!recs.length) return '';
   return `<div style="border-top:1px solid var(--line-2)">
-    <div class="panel-head" style="border-bottom:none"><h2 style="font-size:13px">Recent record classification</h2><span class="meta">Last ${recs.length} records</span></div>
-    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Tier</th><th>Volume</th><th>Stream (job)</th><th>Started</th><th>Status</th></tr></thead><tbody>
+    <div class="panel-head" style="border-bottom:none"><h2 style="font-size:13px">Recent record classification</h2><span class="meta">Last ${plural(recs.length,'completed backup')}</span></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Tier</th><th>Volume</th><th>Stream (job)</th><th>Started</th></tr></thead><tbody>
     ${recs.map(r => `<tr><td>${badge(r.gfs_class==='expired'?'recyclable':r.gfs_class, 'wide t-'+r.gfs_class)}</td><td class="vol">${esc(r.volume_tag||'—')}</td>
-      <td>${esc(r.stream==='(unlabeled)'?'Ad-hoc':r.stream||'—')}</td><td>${esc(fmtWhen(r.started_at))}</td>
-      <td><span class="status-dot ${r.status==='completed'?'ok':r.status==='cancelled'?'neutral':'bad'}">${esc(r.status)}</span></td></tr>`).join('')}
+      <td>${esc(r.stream==='(unlabeled)'?'Ad-hoc':r.stream||'—')}</td><td>${esc(fmtWhen(r.started_at))}</td></tr>`).join('')}
     </tbody></table></div></div>`;
 }
 
