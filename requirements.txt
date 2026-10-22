@@ -1,2 +1,4 @@
 Flask==3.0.3
 paho-mqtt==1.6.1
+Authlib==1.8.0
+requests==2.34.2

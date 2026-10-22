@@ -25,10 +25,13 @@ from .restore_worker import restore_worker
 from .format_worker import format_worker
 from .inventory_worker import inventory_worker
 from .verify_worker import verify_worker
+from .auth import SSO_ENABLED, template_context
 
 
 def require_password():
-    if not WEBUI_PASSWORD: return None
+    # With Google sign-in on, auth.py's gate has already checked the session,
+    # and the shared API key must not get anyone past it.
+    if SSO_ENABLED or not WEBUI_PASSWORD: return None
     if not hmac.compare_digest(request.headers.get("X-API-Key",""), WEBUI_PASSWORD):
         return jsonify({"ok":False,"error":"Unauthorized"}), 401
     return None
@@ -1127,7 +1130,8 @@ def index():
     return render_template("index.html", changer=CHANGER, tape=TAPE,
                            polling=POLL_SECONDS, backup_root=BACKUP_ROOT,
                            restore_root=RESTORE_ROOT,
-                           webui_password=WEBUI_PASSWORD)
+                           webui_password="" if SSO_ENABLED else WEBUI_PASSWORD,
+                           **template_context())
 
 
 

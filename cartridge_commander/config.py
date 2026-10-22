@@ -9,7 +9,17 @@ TAPE                 = os.getenv("TL_TAPE",               "/dev/nst0")
 POLL_SECONDS         = int(os.getenv("TL_POLL_SECONDS",   "15"))
 COMMAND_TIMEOUT      = int(os.getenv("TL_COMMAND_TIMEOUT","60"))
 WEBUI_PASSWORD       = os.getenv("TL_WEBUI_PASSWORD",     "")
-BACKUP_ROOT          = os.getenv("BACKUP_ROOT",           "/mnt/user")
+
+# Google sign-in (OpenID Connect).  Setting either GOOGLE_* value turns it on
+# for every page and API call; see auth.py.
+GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID",      "").strip()
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET",  "").strip()
+AUTH_ALLOWED_EMAILS  = os.getenv("AUTH_ALLOWED_EMAILS",   "")    # comma-separated Google accounts
+AUTH_REQUIRE_MFA     = os.getenv("AUTH_REQUIRE_MFA",      "true").strip().lower() == "true"
+AUTH_SESSION_HOURS   = int(os.getenv("AUTH_SESSION_HOURS", "12"))
+PUBLIC_URL           = os.getenv("PUBLIC_URL",            "").strip().rstrip("/")  # e.g. https://tape.example.com
+SECRET_KEY_FILE      = os.getenv("SECRET_KEY_FILE",       "/var/lib/tl2000/secret_key")
+BACKUP_ROOT         = os.getenv("BACKUP_ROOT",           "/mnt/user")
 BACKUP_CHUNK_SIZE    = int(os.getenv("BACKUP_CHUNK_SIZE", str(1024*1024)))
 TAPE_BLOCK_BYTES     = int(os.getenv("TL_TAPE_BLOCK_KB", "512")) * 1024   # physical tape block size, default 512 KiB
 AUTO_REWIND_AFTER    = os.getenv("AUTO_REWIND_AFTER_BACKUP","true").lower() == "true"

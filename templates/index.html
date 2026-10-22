@@ -49,6 +49,13 @@
     <div class="row"><span>Drive</span><span>{{ tape }}</span></div>
     <div class="row"><span>Health</span><span id="side-sg">—</span></div>
   </div>
+  {% if user_email %}
+  <form class="side-user" method="post" action="/logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
+    <span class="who" title="{{ user_email }}">{{ user_email }}</span>
+    <button class="btn xs" type="submit">Sign out</button>
+  </form>
+  {% endif %}
 </nav>
 
 <!-- ═══ MAIN ══════════════════════════════════════════════════════════════ -->
@@ -181,6 +188,7 @@
 <script>
 window.APP_CONFIG = {
   apiKey: {{ webui_password|tojson }},
+  csrfToken: {{ csrf_token|tojson }},
   backupRoot: {{ backup_root|tojson }},
   restoreRoot: {{ restore_root|tojson }},
   pollingMs: {{ (polling * 1000)|tojson }}

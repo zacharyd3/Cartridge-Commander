@@ -22,6 +22,7 @@ from .mqtt import mqtt_available, mqtt_loop
 from .scheduler import _load_schedules, scheduler_loop
 from .inventory_worker import inventory_worker
 from . import routes  # noqa: F401 -- import for its @app.route registration side effects
+from .auth import ALLOWED_EMAILS, SSO_ENABLED, init_auth
 from . import state as shared_state
 
 _log = get_logger("app")
@@ -46,6 +47,13 @@ def _log_startup_banner() -> None:
               os.getenv("PORT", "8080"), "set" if cfg.WEBUI_PASSWORD else "none", cfg.POLL_SECONDS,
               f"{cfg.MQTT_HOST}:{cfg.MQTT_PORT}" if cfg.MQTT_HOST else "disabled",
               on_off(cfg.STARTUP_QUICK_SCAN))
+    if SSO_ENABLED:
+        _log.info("Auth: Google sign-in for %d allowed account(s), MFA %s, sessions last %sh, public URL %s",
+                  len(ALLOWED_EMAILS), "required" if cfg.AUTH_REQUIRE_MFA else "left to the Google account",
+                  cfg.AUTH_SESSION_HOURS, cfg.PUBLIC_URL or "(unset)")
+    else:
+        _log.info("Auth: no sign-in; set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET before exposing the UI "
+                  "beyond your LAN.")
     _log.info("Container logging: LOG_LEVEL=%s LOG_HTTP_REQUESTS=%s "
               "(set LOG_LEVEL=DEBUG for every device command and API read).",
               LOG_LEVEL, LOG_HTTP_REQUESTS)
@@ -75,6 +83,13 @@ def run() -> None:
             db_log("app", "error", f"Device configuration: {_problem}")
         except Exception:
             _log.error("Device configuration: %s", _problem)
+    # Any problem here leaves every page behind the sign-in gate with sign-in
+    # disabled, so a half-finished setup never serves the UI unprotected.
+    for _problem in init_auth():
+        try:
+            db_log("auth", "error", f"Google sign-in configuration: {_problem}")
+        except Exception:
+            _log.error("Google sign-in configuration: %s", _problem)
     os.makedirs(INCREMENTAL_DIR, exist_ok=True)
     _load_schedules()
     _load_drive_history()

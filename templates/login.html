@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Sign in · Cartridge Commander</title>
+<link rel="icon" type="image/png" href="/icon.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"/>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"/>
+</head>
+<body>
+<main class="login-page">
+  <div class="card login-card">
+    <div class="brand">
+      <div class="brand-mark"><img src="/icon.png" alt="" onerror="this.remove()"/><svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="12" r="2"/><path d="M10 12h4"/></svg></div>
+      <div>
+        <div class="brand-name">Cartridge Commander</div>
+        <div class="brand-sub">Tape library</div>
+      </div>
+    </div>
+    <div>
+      <h1>Sign in</h1>
+      <p>Use an allowed Google account{% if require_mfa %} with 2-Step Verification turned on{% endif %}.</p>
+    </div>
+    {% if message %}<div class="callout {{ tone }}" role="status">{{ message }}</div>{% endif %}
+    {% if can_sign_in %}
+    <a class="btn primary block" href="{{ start_url }}">Sign in with Google</a>
+    {% else %}
+    <button class="btn primary block" type="button" disabled>Sign in with Google</button>
+    {% endif %}
+    <p class="login-note">You'll stay signed in on this browser for {{ session_hours }} hour{{ '' if session_hours == 1 else 's' }}.</p>
+  </div>
+</main>
+</body>
+</html>

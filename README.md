@@ -130,7 +130,8 @@ symlinks instead of raw `/dev/sgN` paths.
 | `TL_CHANGER` | changer `/dev/sgN` path (default `/dev/sg12`) |
 | `TL_TAPE` | tape drive `/dev/nstN` path (default `/dev/nst0`) |
 | `SG_DEVICE` | drive's `/dev/sgN` for `sg_logs` health data (optional) |
-| `TL_WEBUI_PASSWORD` | sets a password on the web UI / API |
+| `TL_WEBUI_PASSWORD` | API key the UI sends with every request. It is not a login: the page hands it to any browser that opens the UI. Ignored while Google sign-in is on |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `AUTH_ALLOWED_EMAILS`, `PUBLIC_URL`, `AUTH_REQUIRE_MFA`, `AUTH_SESSION_HOURS` | Google sign-in, see [Google sign-in for remote access](#google-sign-in-for-remote-access) |
 | `BACKUP_ROOT` | root directory backups are allowed to read from |
 | `RESTORE_ROOT` | root directory restores are written to |
 | `MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`, `MQTT_PASS` | MQTT broker for Home Assistant discovery |
@@ -159,6 +160,71 @@ archive, with a suggested label to write on the cartridge (e.g.
 whose leftover space is too small for your usual backup, e.g. `20` to treat a
 2.5 TB tape with 0.5 TB left as full. It can also be changed next to the tape
 selection strategy on the **Retention** page; the saved value takes precedence.
+
+### Google sign-in for remote access
+
+Without it, anyone who can reach the port can drive the library. Turn it on
+before publishing the UI through a reverse proxy: every page and API call then
+needs a sign-in with one of the Google accounts you list, and by default that
+sign-in must have used a second factor.
+
+1. **Create the OAuth client.** In Google Cloud Console, go to
+   **APIs & Services > Credentials > Create credentials > OAuth client ID**,
+   type **Web application**. Under **Authorized redirect URIs** add
+   `https://<your public address>/auth/callback`. The app asks only for the
+   basic `openid`, `email` and `profile` scopes.
+2. **Set the variables:**
+
+   | Variable | Value |
+   |---|---|
+   | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | from step 1 |
+   | `AUTH_ALLOWED_EMAILS` | the Google accounts allowed in, comma-separated |
+   | `PUBLIC_URL` | the address the proxy serves the app on, e.g. `https://tape.example.com`: https, no path |
+   | `AUTH_REQUIRE_MFA` | `true` (default): only let a sign-in through if Google reports a second factor, see below |
+   | `AUTH_SESSION_HOURS` | how long a sign-in lasts before Google is asked again (default `12`) |
+
+3. **Turn on 2-Step Verification** for every listed account. A passkey or a
+   security key is the strongest second factor.
+
+**How MFA is checked.** With `AUTH_REQUIRE_MFA=true` the app asks Google for
+the sign-in token's `amr` claim, which says how the account signed in, and
+only accepts a sign-in that shows a second factor (`mfa`) or a passkey or
+security key (`swk`, `hwk`). Google fills that claim in only once
+**Authentication strength claims** is turned on in the app's advanced
+settings in Google Cloud Console, and offers that setting only to apps that
+are published and verified (see Google's
+[security bundle](https://developers.google.com/identity/siwg/security-bundle)
+page). Until then every sign-in is refused, and the container log says what
+to change. If you can't
+get the app verified, set `AUTH_REQUIRE_MFA=false`: sign-in still needs one
+of your listed accounts, but the second factor is then up to that account's
+2-Step Verification, which Google can skip on a device you told it to trust.
+
+**Behind the proxy**
+
+- The proxy has to serve HTTPS; the session cookie is only sent over HTTPS.
+- All links and redirects are built from `PUBLIC_URL`, so the app doesn't
+  read `X-Forwarded-*` headers and the proxy needs no special header setup.
+- The LAN address is behind sign-in too. Opening it sends you to
+  `PUBLIC_URL` to sign in, and you carry on there.
+- Only `/healthz` (the container health check), the icon and the static
+  CSS/JS are reachable without signing in.
+- MQTT control from Home Assistant doesn't go through the web UI. Keep the
+  broker on your LAN; it isn't covered by this sign-in.
+
+**Sessions.** A sign-in is a signed cookie that lasts `AUTH_SESSION_HOURS`;
+after that the UI sends you back to Google. Changes (anything but a read)
+also need a per-session CSRF token, which the UI sends automatically. The
+signing key lives in `/var/lib/tl2000/secret_key` (`SECRET_KEY_FILE`).
+Delete it and restart the container to sign everyone out. Removing an
+account from `AUTH_ALLOWED_EMAILS` and restarting signs that account out
+straight away. Sign-ins and refused sign-ins show on the **Activity** page
+and in `docker logs`.
+
+`TL_WEBUI_PASSWORD` is ignored while Google sign-in is on, since a shared key
+would let anything holding it skip MFA. If the sign-in settings are
+incomplete or invalid, the app stays locked: the sign-in button is disabled
+and the container log lists what's missing.
 
 ### How backups are laid out on tape
 

@@ -86,6 +86,23 @@ a:hover{color:var(--accent-hover);}
 .side-status{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:500;}
 .side-status.ok{color:#7BD3A0;} .side-status.bad{color:#F2A29B;}
 .side-status .d{width:7px;height:7px;border-radius:50%;background:currentColor;}
+/* signed-in Google account (auth.py), under the device card */
+.side-user{display:flex;align-items:center;gap:8px;margin-top:-10px;padding:0 4px 0 6px;}
+.side-user .who{flex:1;min-width:0;font-size:11px;font-family:var(--mono);color:var(--side-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.side-user .btn{background:transparent;border-color:var(--side-line);color:var(--side-ink);}
+.side-user .btn:hover:not(:disabled){background:var(--side-2);border-color:var(--side-line);color:#fff;}
+.side-user .btn:focus-visible{outline-color:var(--side-bar);}
+
+/* ── Sign-in page (login.html) ─────────────────────────────────────────── */
+.login-page{min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px 16px;}
+.login-card{width:100%;max-width:380px;display:flex;flex-direction:column;gap:18px;padding:28px;}
+.login-card .brand{padding:0;}
+.login-card .brand-name{color:var(--ink);}
+.login-card .brand-sub{color:var(--muted);}
+.login-card h1{font-size:18px;font-weight:600;letter-spacing:-.01em;}
+.login-card p{color:var(--ink-3);font-size:13px;}
+.login-card .btn{height:40px;}
+.login-note{font-size:12px;color:var(--muted);}
 
 .main{min-width:0;display:flex;flex-direction:column;}
 #topbar{

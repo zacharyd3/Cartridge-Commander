@@ -181,7 +181,9 @@ def log_request(request, response, elapsed_s: float) -> None:
     if not log.isEnabledFor(level):
         return
 
-    parts = [f"{request.remote_addr} {method} {request.full_path.rstrip('?')} -> {status} ({elapsed_s * 1000:.0f} ms)"]
+    # The sign-in callback's query string carries Google's one-time code.
+    shown = path if path.startswith("/auth/") else request.full_path.rstrip('?')
+    parts = [f"{request.remote_addr} {method} {shown} -> {status} ({elapsed_s * 1000:.0f} ms)"]
     if not is_read:
         body = request.get_json(silent=True)
         if body is not None:

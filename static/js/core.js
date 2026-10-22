@@ -110,12 +110,17 @@ const fmtAgo = ts => {
   return fmtDate(ts);
 };
 const _API_KEY = window.APP_CONFIG.apiKey;
+const _CSRF_TOKEN = window.APP_CONFIG.csrfToken;
 async function api(path,method='GET',body=null){
   const headers = {'Content-Type':'application/json'};
   if(_API_KEY) headers['X-API-Key'] = _API_KEY;
+  if(_CSRF_TOKEN) headers['X-CSRF-Token'] = _CSRF_TOKEN;
   try {
     const r = await fetch(path,{method,headers,body:body?JSON.stringify(body):null});
-    return await r.json();
+    const data = await r.json();
+    // Google sign-in session ended: go sign in again, then come back here.
+    if(r.status === 401 && data.login_required) location.assign('/login?next=' + encodeURIComponent(location.pathname + location.search));
+    return data;
   } catch(e) {
     return {ok: false, error: `Network error: ${e.message||e}`};
   }
