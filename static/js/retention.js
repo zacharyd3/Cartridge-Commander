@@ -3,6 +3,8 @@
 // RETENTION PAGE — GFS policy, tape selection strategy, archive folder naming
 // ══════════════════════════════════════════════════════════════════════════════
 const TIER_COLOR = {daily:'var(--r250)', weekly:'var(--r500)', monthly:'var(--r650)', expired:'var(--neutral-2)'};
+// Tier column sort order: shortest-lived first, recyclable last.
+const TIER_RANK = {daily:1, weekly:2, monthly:3, expired:4};
 
 function renderRetentionPage(c){
   const s = G.settings || {};
@@ -117,9 +119,9 @@ function gfsClassificationHTML(){
   if(!recs.length) return '';
   return `<div style="border-top:1px solid var(--line-2)">
     <div class="panel-head" style="border-bottom:none"><h2 style="font-size:13px">Recent record classification</h2><span class="meta">Last ${plural(recs.length,'completed backup')}</span></div>
-    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Tier</th><th>Volume</th><th>Stream (job)</th><th>Started</th></tr></thead><tbody>
-    ${recs.map(r => `<tr><td>${badge(r.gfs_class==='expired'?'recyclable':r.gfs_class, 'wide t-'+r.gfs_class)}</td><td class="vol">${esc(r.volume_tag||'—')}</td>
-      <td>${esc(r.stream==='(unlabeled)'?'Ad-hoc':r.stream||'—')}</td><td>${esc(fmtWhen(r.started_at))}</td></tr>`).join('')}
+    <div class="tbl-wrap"><table class="tbl" data-sort-key="gfs"><thead><tr><th data-sort="text">Tier</th><th data-sort="text">Volume</th><th data-sort="text">Stream (job)</th><th data-sort="num">Started</th></tr></thead><tbody>
+    ${recs.map(r => `<tr><td data-v="${TIER_RANK[r.gfs_class] ?? 9}">${badge(r.gfs_class==='expired'?'recyclable':r.gfs_class, 'wide t-'+r.gfs_class)}</td><td class="vol">${esc(r.volume_tag||'—')}</td>
+      <td>${esc(r.stream==='(unlabeled)'?'Ad-hoc':r.stream||'—')}</td><td data-v="${r.started_at||''}">${esc(fmtWhen(r.started_at))}</td></tr>`).join('')}
     </tbody></table></div></div>`;
 }
 

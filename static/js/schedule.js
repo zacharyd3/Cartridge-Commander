@@ -148,14 +148,14 @@ function renderScheduleList(){
   if(!G.schedules.length){ card.innerHTML = '<div class="empty-state">No schedules</div>'; return; }
   const running = !!G.state?.backup_job?.running;
   const lastRun = s => s.last_run ? `Last run ${fmtWhen(s.last_run)}` : 'Not run yet';
-  card.innerHTML = `<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th style="width:76px">Enabled</th><th>Job</th><th>Frequency</th><th>Next run</th><th>Sources</th><th style="text-align:right">Actions</th></tr></thead>
+  card.innerHTML = `<div class="tbl-wrap"><table class="tbl" data-sort-key="schedules">
+    <thead><tr><th style="width:76px" data-sort="num">Enabled</th><th data-sort="text">Job</th><th data-sort="text">Frequency</th><th data-sort="num" data-sort-first="asc">Next run</th><th data-sort="text">Sources</th><th style="text-align:right">Actions</th></tr></thead>
     <tbody>${G.schedules.map(s => `<tr class="${s.id===G.schedEditId?'editing':''}">
-      <td><label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} aria-label="Enable ${esc(s.label||'schedule')}" onchange="toggleSched('${jsq(s.id)}',this.checked)"/><span class="toggle-track"></span></label></td>
-      <td><div style="font-weight:600;font-size:13px">${esc(s.label||'Backup')}</div><div class="sub">${s.enabled?esc(lastRun(s)):'Disabled'}</div></td>
+      <td data-v="${s.enabled?1:0}"><label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} aria-label="Enable ${esc(s.label||'schedule')}" onchange="toggleSched('${jsq(s.id)}',this.checked)"/><span class="toggle-track"></span></label></td>
+      <td data-v="${esc(s.label||'Backup')}"><div style="font-weight:600;font-size:13px">${esc(s.label||'Backup')}</div><div class="sub">${s.enabled?esc(lastRun(s)):'Disabled'}</div></td>
       <td>${esc(schedWhen(s))}</td>
-      <td>${s.enabled ? `<div>${s.next_run?esc(new Date(s.next_run*1000).toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})):'—'}</div><div class="sub">${fmtNext(s.next_run)}</div>` : '<span class="text-muted">Paused</span>'}</td>
-      <td class="path" style="line-height:1.6">${(s.paths||[]).map(esc).join('<br>')}${(s.excludes||[]).map(x=>`<br><span class="excl-path" title="Excluded">− ${esc(x)}</span>`).join('')}</td>
+      <td data-v="${s.enabled ? s.next_run||'' : ''}">${s.enabled ? `<div>${s.next_run?esc(new Date(s.next_run*1000).toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})):'—'}</div><div class="sub">${fmtNext(s.next_run)}</div>` : '<span class="text-muted">Paused</span>'}</td>
+      <td class="path" style="line-height:1.6" data-v="${esc((s.paths||[]).join(' '))}">${(s.paths||[]).map(esc).join('<br>')}${(s.excludes||[]).map(x=>`<br><span class="excl-path" title="Excluded">− ${esc(x)}</span>`).join('')}</td>
       <td><div class="actions">
         <button class="btn sm" onclick="runSchedNow('${jsq(s.id)}')" ${running?'disabled':''} aria-label="Run ${esc(s.label||'schedule')} now">${ico('play',13)}Run now</button>
         <button class="btn icon" onclick="editSched('${jsq(s.id)}')" aria-label="Edit ${esc(s.label||'schedule')}" title="Edit">${ico('edit',14)}</button>

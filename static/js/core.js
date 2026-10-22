@@ -202,6 +202,9 @@ const ICONS = {
   circle:'<circle cx="12" cy="12" r="6"/>',
   save:'<path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8M7 21v-7h10v7"/>',
   copy:'<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  sortAsc:'<path d="m6 15 6-6 6 6"/>',
+  sortDesc:'<path d="m6 9 6 6 6-6"/>',
+  sortNone:'<path d="m8 9 4-4 4 4M8 15l4 4 4-4"/>',
 };
 function ico(name, size=16, attrs=''){
   return `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${attrs?' '+attrs:''}>${ICONS[name]||''}</svg>`;
@@ -250,6 +253,81 @@ function logRows(entries, {limit=30, boxed=false}={}){
     return `<div class="log-entry ${cls}"><span class="log-time">${new Date((e.ts||0)*1000).toLocaleTimeString()}</span><span>${logLevelBadge(cls)}</span><span class="log-msg">${esc(e.message)}</span></div>`;
   }).join('');
 }
+
+// ── Sortable tables ──────────────────────────────────────────────────────────
+// Any table with data-sort-key sorts by a header marked data-sort ("text" or "num")
+// when it is clicked: the first click puts text A→Z and numbers high→low (or the
+// header's data-sort-first, e.g. "asc" for upcoming dates), the second reverses
+// that, the third restores the table's own order. A cell's data-v, when present,
+// is its sort value instead of its text; empty values always sort last.
+// The choice is kept per table, across reloads, and re-applied whenever a page
+// re-renders the table.
+const TABLE_SORT_STORE = 'cc.tableSort';
+let _tableSorts = {};
+try { _tableSorts = JSON.parse(localStorage.getItem(TABLE_SORT_STORE)) || {}; } catch(e){}
+
+function _sortHeaders(table){ return [...(table.tHead?.rows[0]?.cells || [])]; }
+const _sortColName = th => th.dataset.sortName || th.textContent.trim();
+
+function applyTableSort(table){
+  const ths = _sortHeaders(table);
+  const st = _tableSorts[table.dataset.sortKey];
+  const col = st ? ths.findIndex(th => th.dataset.sort && _sortColName(th) === st.col) : -1;
+  ths.forEach((th, i) => {
+    if(!th.dataset.sort) return;
+    const dir = i === col ? st.dir : '';
+    th.setAttribute('aria-sort', dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none');
+    const arrow = th.querySelector('.th-arrow');
+    if(arrow) arrow.innerHTML = ico(dir === 'asc' ? 'sortAsc' : dir === 'desc' ? 'sortDesc' : 'sortNone', 12);
+  });
+  const body = table.tBodies[0]; if(!body) return;
+  // Only full rows move; an empty-state row spanning the table stays put.
+  const rows = [...body.rows].filter(r => r.cells.length === ths.length);
+  rows.forEach((r, n) => { if(r.dataset.order == null) r.dataset.order = n; });
+  const type = col >= 0 ? ths[col].dataset.sort : '';
+  const val = r => {
+    const td = r.cells[col];
+    const raw = (td.dataset.v ?? td.textContent).trim();
+    if(raw === '' || raw === '—') return null;
+    if(type !== 'num') return raw;
+    const n = parseFloat(raw);
+    return isNaN(n) ? null : n;
+  };
+  const order = (a, b) => a.dataset.order - b.dataset.order;
+  rows.sort(col < 0 ? order : (a, b) => {
+    const va = val(a), vb = val(b);
+    if(va === null || vb === null) return (va === null) - (vb === null) || order(a, b);
+    const c = type === 'num' ? va - vb : va.localeCompare(vb, undefined, {numeric:true, sensitivity:'base'});
+    return (st.dir === 'asc' ? c : -c) || order(a, b);
+  });
+  for(const r of rows) body.appendChild(r);
+}
+
+function cycleTableSort(th){
+  const table = th.closest('table[data-sort-key]'); if(!table) return;
+  const key = table.dataset.sortKey, name = _sortColName(th);
+  const first = th.dataset.sortFirst || (th.dataset.sort === 'num' ? 'desc' : 'asc');
+  const cur = _tableSorts[key];
+  if(!cur || cur.col !== name) _tableSorts[key] = {col:name, dir:first};
+  else if(cur.dir === first) _tableSorts[key] = {col:name, dir:first === 'asc' ? 'desc' : 'asc'};
+  else delete _tableSorts[key];
+  try { localStorage.setItem(TABLE_SORT_STORE, JSON.stringify(_tableSorts)); } catch(e){}
+  applyTableSort(table);
+}
+
+// Turn sortable headers into buttons and apply the saved order to any newly rendered table.
+function enhanceSortableTables(){
+  for(const table of document.querySelectorAll('table[data-sort-key]:not([data-sort-ready])')){
+    table.dataset.sortReady = '1';
+    for(const th of _sortHeaders(table)){
+      if(!th.dataset.sort) continue;
+      th.dataset.sortName = _sortColName(th);
+      th.innerHTML = `<button type="button" class="th-sort" onclick="cycleTableSort(this.closest('th'))">${th.innerHTML}<span class="th-arrow"></span></button>`;
+    }
+    applyTableSort(table);
+  }
+}
+new MutationObserver(enhanceSortableTables).observe(document.body, {childList:true, subtree:true});
 
 // ── Lazy data: records, schedules, settings, GFS ─────────────────────────────
 async function ensureRecords(force=false){
