@@ -59,7 +59,7 @@ const LABEL_NOISE = /\b(?:hourly|daily|nightly|bi[- ]?weekly|weekly|fortnightly|
 // What one backup holds: its job label minus the noise words, or, for an ad-hoc backup
 // or a label that was only noise ("Nightly backup"), the folders it backed up.
 function backupContentNames(r){
-  const name = recordStream(r).replace(/_+/g,' ').replace(LABEL_NOISE,' ').replace(/\(\s*\)|\[\s*\]/g,' ')
+  const name = recordStream(r).replace(/_+/g,' ').replace(LABEL_NOISE,' ').replace(/[()[\]{}]/g,' ')
     .replace(/\s+[-–—:|](?:\s+[-–—:|])*\s+/g,' - ').replace(/\s+/g,' ').replace(/^[\s\-–—:|,.&+/]+|[\s\-–—:|,.&+/]+$/g,'');
   if(name) return [name];
   return (r.paths||[]).map(p => String(p).replace(/\/+$/,'').split('/').pop()).filter(Boolean)
