@@ -1,6 +1,7 @@
 """db module (split from the original monolithic app.py)."""
 
 import os
+import re
 import json
 import threading
 import subprocess
@@ -77,6 +78,11 @@ def init_tape_catalog() -> None:
         if "archived_at" not in cols:
             # Timestamp when the tape was last marked as not present after a scan
             conn.execute("ALTER TABLE tape_catalog ADD COLUMN archived_at INTEGER")
+        if "sessions_json" not in cols:
+            # JSON array of the backups written to this tape, one per tape file,
+            # with their file number and (for backups spanning tapes) the full
+            # chain of segments.  Maintained by tape_layout.
+            conn.execute("ALTER TABLE tape_catalog ADD COLUMN sessions_json TEXT NOT NULL DEFAULT '[]'")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS app_kv (
                 key TEXT PRIMARY KEY,
@@ -244,6 +250,13 @@ def _catalog_bool(v: Any, default: bool = False) -> bool:
     except Exception:
         return default
 
+def _json_list(raw: Any) -> List[Any]:
+    try:
+        val = json.loads(raw or '[]')
+    except Exception:
+        return []
+    return val if isinstance(val, list) else []
+
 def _row_to_index(row: sqlite3.Row) -> Dict[str, Any]:
     from .drive_history import build_tape_space_info
     files = []
@@ -273,6 +286,7 @@ def _row_to_index(row: sqlite3.Row) -> Dict[str, Any]:
         'space_estimated': _catalog_bool(row['space_estimated'], True) if 'space_estimated' in row.keys() else True,
         'backup_dirnames': json.loads(row['backup_dirnames'] or '[]') if 'backup_dirnames' in row.keys() else [],
         'archived_at': row['archived_at'] if 'archived_at' in row.keys() else None,
+        'sessions': _json_list(row['sessions_json']) if 'sessions_json' in row.keys() else [],
     }
     data['space'] = build_tape_space_info(data['volume_tag'], idx=data, loaded=False)
     return data
@@ -282,6 +296,7 @@ def save_tape_index(vol, files, written_at, meta=None):
     if not vol:
         return
     meta = meta or {}
+    layout = getattr(files, 'layout', None)
     files = list(files or [])
     ts_now = now_ts()
     is_cleaning = bool(meta.get('is_cleaning', is_cleaning_volume_tag(vol)))
@@ -353,6 +368,19 @@ def save_tape_index(vol, files, written_at, meta=None):
             ts_now,
         ))
         conn.commit()
+
+    # A live read of the tape (TapeListing) also says where each backup sits:
+    # rebuild the tape's session list and folder list from it.
+    if layout:
+        from .tape_layout import sessions_from_layout, _write_layout, _layout_lock
+        with _layout_lock:
+            sessions = sessions_from_layout(vol, layout)
+            dirnames = []
+            for entry in layout:
+                for d in entry.get('dirnames') or []:
+                    if d not in dirnames:
+                        dirnames.append(d)
+            _write_layout(vol, sessions, dirnames=dirnames)
 
 def update_tape_index_metadata(vol, **meta):
     from .state import is_cleaning_volume_tag, now_ts
@@ -488,35 +516,33 @@ def mark_all_indexes_not_present():
         )
         conn.commit()
 
-def read_tape_index_live() -> List[str]:
-    """Read the file list from the tape currently in the drive.
+class TapeListing(list):
+    """File list read back from a tape, plus where each backup sits on it.
 
-    Uses `dd if=TAPE bs=TAPE_BLOCK_BYTES | tar -t -f -` so that the physical
-    block size matches what was used when writing (default 512 KiB via dd).
-    Reading with plain `tar -tf /dev/nst0` uses the default 512-byte block
-    size, which causes the kernel tape driver to return ENOMEM when it tries
-    to read a 512 KiB physical block into a 512-byte buffer.
-
-    Always rewinds before reading.
+    ``layout`` has one entry per tape file (each backup is its own tape file,
+    appended one after another): ``{"file_number", "dirnames", "entries",
+    "bytes", "ok"}``.  ``save_tape_index`` uses it to rebuild the tape's
+    session list, so a re-index also recovers where each backup starts.
     """
-    from .state import TapeError, log_exit_codes, log_pipeline
-    get_logger("index").info("$ mt -f %s rewind", TAPE)
-    try:
-        subprocess.run(["mt", "-f", TAPE, "rewind"],
-                       capture_output=True, timeout=max(COMMAND_TIMEOUT, 300), check=True)
-    except Exception as e:
-        raise TapeError(f"Rewind before index read failed: {e}")
+    def __init__(self, files=(), layout=None):
+        super().__init__(files)
+        self.layout: List[Dict[str, Any]] = list(layout or [])
 
+
+_MAX_TAPE_FILES = 10000
+
+
+def _read_one_tape_file(file_number: int) -> Dict[str, Any]:
+    """List the tar members in one tape file.  The drive must be positioned
+    at the start of that file.  Returns {"files", "bytes", "tar_rc", "err"}."""
+    from .state import TapeError, log_exit_codes, log_pipeline
+    dd_cmd = ["dd", f"if={TAPE}", f"bs={TAPE_BLOCK_BYTES}", "status=progress"]
     # dd reads physical tape blocks at the correct block size and streams bytes
     # to tar's stdin; tar reads the archive from stdin with no block-size concern.
     # status=progress ensures dd emits its byte counter and any errors to stderr
     # even if tar exits early — critical for diagnosing failures.
-    log_pipeline("index", ["dd", f"if={TAPE}", f"bs={TAPE_BLOCK_BYTES}", "status=progress"], ["tar", "-t", "-f", "-"])
-    dd_proc = subprocess.Popen(
-        ["dd", f"if={TAPE}", f"bs={TAPE_BLOCK_BYTES}", "status=progress"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    log_pipeline("index", dd_cmd, ["tar", "-t", "-f", "-"])
+    dd_proc = subprocess.Popen(dd_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     tar_proc = subprocess.Popen(
         ["tar", "-t", "-f", "-"],
         stdin=dd_proc.stdout,
@@ -538,9 +564,7 @@ def read_tape_index_live() -> List[str]:
     _dd_drain_t = threading.Thread(target=_drain_dd_err, daemon=True)
     _dd_drain_t.start()
 
-    # Scale timeout to tape size: assume worst case 80 MB/s read speed.
-    # Minimum 10 min, no upper cap — a 12 TB LTO-8 could take ~42 hours at 80 MB/s
-    # but in practice we only call this for verify/reindex, not post-backup indexing.
+    # No practical upper bound: a full LTO file can take many hours to read.
     try:
         tar_out, tar_err = tar_proc.communicate(timeout=max(600, TAPE_BLOCK_BYTES))
     except subprocess.TimeoutExpired:
@@ -557,7 +581,7 @@ def read_tape_index_live() -> List[str]:
                 pass
         _dd_drain_t.join(timeout=5)
         raise TapeError(
-            f"tar -t timed out reading tape index — tape may be too large for the "
+            f"tar -t timed out reading tape file {file_number} — tape may be too large for the "
             f"configured timeout. Use 'Read Index' from the library after the backup completes."
         )
     dd_proc.wait(timeout=30)
@@ -565,31 +589,96 @@ def read_tape_index_live() -> List[str]:
     log_exit_codes("index", dd=dd_proc.returncode, tar=tar_proc.returncode)
 
     dd_stderr = b"".join(_dd_stderr_buf).decode(errors="ignore").strip()
+    m = None
+    for m in re.finditer(r"^(\d+) bytes", dd_stderr, re.M):
+        pass
     files = [l for l in (tar_out or b"").decode(errors="ignore").splitlines() if l.strip()]
     err = (tar_err or b"").decode(errors="ignore").strip()
-
     # Append any dd errors to the tar error message for diagnostics
     if dd_stderr and "error" in dd_stderr.lower():
         err = (err + "\ndd: " + dd_stderr[-300:]).strip()
+    return {"files": files, "bytes": int(m.group(1)) if m else 0,
+            "tar_rc": tar_proc.returncode, "err": err}
 
-    # rc=1 from tar means warnings (e.g. socket files skipped) — still usable.
-    # rc=2 means fatal error and no output.
-    if tar_proc.returncode not in (0, 1) and not files:
+
+def read_tape_index_live() -> List[str]:
+    """Read the file list of every backup on the tape currently in the drive.
+
+    Backups are appended one after another, each as its own tape file, so
+    this walks the tape file by file until it reaches end-of-data.  Each file
+    is read with `dd if=TAPE bs=TAPE_BLOCK_BYTES | tar -t -f -` so that the
+    physical block size matches what was used when writing (default 512 KiB).
+    Reading with plain `tar -tf /dev/nst0` uses the default 512-byte block
+    size, which causes the kernel tape driver to return ENOMEM when it tries
+    to read a 512 KiB physical block into a 512-byte buffer.
+
+    A backup that continues onto another tape leaves a partial archive at the
+    end of one tape and a continuation at the start of the next.  tar lists
+    what it can of both (it complains about the cut, which is expected), so
+    their members are still indexed.
+
+    Returns a TapeListing (a list of member paths with a ``layout``).
+    """
+    from .state import TapeError
+    get_logger("index").info("$ mt -f %s rewind", TAPE)
+    try:
+        subprocess.run(["mt", "-f", TAPE, "rewind"],
+                       capture_output=True, timeout=max(COMMAND_TIMEOUT, 300), check=True)
+    except Exception as e:
+        raise TapeError(f"Rewind before index read failed: {e}")
+
+    all_files: List[str] = []
+    layout: List[Dict[str, Any]] = []
+    first_err = ""
+    for file_number in range(_MAX_TAPE_FILES):
+        if file_number:
+            # Position explicitly rather than trusting where the previous read
+            # stopped: tar can stop reading before dd has consumed the filemark.
+            try:
+                subprocess.run(["mt", "-f", TAPE, "rewind"], capture_output=True,
+                               timeout=max(COMMAND_TIMEOUT, 300), check=True)
+                subprocess.run(["mt", "-f", TAPE, "fsf", str(file_number)], capture_output=True,
+                               timeout=max(COMMAND_TIMEOUT, 600), check=True)
+            except Exception:
+                break   # no such file: past end-of-data
+        res = _read_one_tape_file(file_number)
+        if res["bytes"] == 0 and not res["files"]:
+            if file_number == 0:
+                first_err = res["err"]
+            break       # empty read: end-of-data
+        if file_number == 0:
+            first_err = res["err"]
+        dirnames: List[str] = []
+        for f in res["files"]:
+            top = f.split("/", 1)[0]
+            if top and top not in dirnames:
+                dirnames.append(top)
+        layout.append({
+            "file_number": file_number,
+            "dirnames": dirnames,
+            "entries": len(res["files"]),
+            "bytes": res["bytes"],
+            "ok": res["tar_rc"] in (0, 1),
+        })
+        all_files.extend(res["files"])
+
+    if not all_files:
+        err = first_err
         # Distinguish blank/foreign-format tapes from genuine read errors.
         # "does not look like a tar archive" means the tape has data but it's not tar
         # (written by other software, or a partial/corrupt first block).
-        # Empty stderr with rc=2 typically means a completely blank tape.
+        # Empty stderr typically means a completely blank tape.
         _BLANK_OR_FOREIGN = (
             "does not look like a tar archive" in err
-            or "This does not look like a tar archive" in err
             or "Skipping to next header" in err
             or not err  # blank tape — dd reads nothing, tar gets EOF immediately
         )
         if _BLANK_OR_FOREIGN:
             raise TapeError(f"__blank_or_foreign__: {err[:200] or 'no tar header found'}")
-        raise TapeError(f"tar -t failed (rc={tar_proc.returncode}): {err[:300] or 'no output'}")
+        raise TapeError(f"tar -t failed: {err[:300] or 'no output'}")
 
-    return files
+    get_logger("index").info("Read %d tape file(s), %d entries", len(layout), len(all_files))
+    return TapeListing(all_files, layout)
 
 def list_all_known_indexes(include_deleted: bool = False):
     query = "SELECT * FROM tape_catalog"

@@ -158,17 +158,29 @@ def lto_native_capacity_bytes(gen: Optional[int]) -> Optional[int]:
 
 
 def bytes_written_for_volume(volume_tag: str) -> int:
+    """Bytes of backup data currently on a tape.
+
+    The tape's session list is authoritative; without one, fall back to the
+    backup records that still have data on it (not overwritten), counting
+    only each record's segment on this tape."""
+    from .tape_layout import record_segments, tape_used_bytes
     if not volume_tag:
         return 0
+    used = tape_used_bytes(volume_tag)
+    if used is not None:
+        return used
     total = 0
     with shared_state._backup_records_lock:
         recs = list(shared_state._backup_records)
     for r in recs:
-        if r.get("volume_tag") == volume_tag and r.get("status") == "completed":
-            try:
-                total += int(r.get("bytes_written") or 0)
-            except Exception:
-                pass
+        if r.get("overwritten") or r.get("status") != "completed":
+            continue
+        for seg in record_segments(r):
+            if seg.get("volume_tag") == volume_tag:
+                try:
+                    total += int(seg.get("bytes") or 0)
+                except Exception:
+                    pass
     return total
 
 
@@ -270,13 +282,16 @@ def tape_fill_status(volume_tag: str, idx: Optional[Dict[str, Any]] = None,
     """How full a tape is, judged the way tape selection judges it.
 
     A tape is full once its free space is at or below the configured reserve
-    (a percentage of capacity): tape selection skips it and the tape catalog
-    flags it as ready to archive.  A tape marked available, or past GFS
-    retention (``recyclable``), is never full -- its contents are due to be
-    overwritten, so the whole tape is writable.
+    (a percentage of capacity), or when its last write ran into end-of-media
+    (``hit_eom``), whatever the catalog estimates its used space to be: tape
+    selection skips it and the tape catalog flags it as ready to archive.  A
+    tape marked available, or past GFS retention (``recyclable``), is never
+    full -- its contents are due to be overwritten, so the whole tape is
+    writable.
 
-    ``writable_bytes`` is how much a backup may still put on the tape, after
-    the WRITE_HEADROOM_PCT safety margin.
+    ``usable_bytes`` is the tape's capacity less the WRITE_HEADROOM_PCT safety
+    margin, and ``writable_bytes`` what a backup appended after the data
+    already on it may still use.
     """
     from .settings import get_tape_full_reserve_pct
     idx = idx or {}
@@ -285,15 +300,19 @@ def tape_fill_status(volume_tag: str, idx: Optional[Dict[str, Any]] = None,
     used = float(space.get("used_bytes") or 0)
     purpose = str(idx.get("purpose") or "").strip().lower()
     reusable = recyclable or purpose in ("available", "recyclable")
+    sessions = sorted(idx.get("sessions") or [], key=lambda s: int(s.get("file_number") or 0))
+    hit_eom = bool(sessions and sessions[-1].get("ended_at_eom"))
     reserve_pct = get_tape_full_reserve_pct()
     free = max(capacity - used, 0.0)
     usable = capacity * (100 - WRITE_HEADROOM_PCT) / 100
     return {
-        "full": not reusable and free <= capacity * reserve_pct / 100,
+        "full": not reusable and (hit_eom or free <= capacity * reserve_pct / 100),
+        "hit_eom": hit_eom,
         "reusable": reusable,
         "capacity_bytes": int(capacity),
         "used_bytes": int(used),
         "free_bytes": int(free),
+        "usable_bytes": int(usable),
         "writable_bytes": int(usable if reusable else max(usable - used, 0.0)),
         "reserve_pct": reserve_pct,
     }
@@ -430,6 +449,8 @@ def _switch_to_rewrite_candidate(current_volume: str = "") -> Dict[str, Any]:
     append_backup_log(f"Erasing {chosen['volume_tag']} for rewrite…")
     run_cmd(["mt", "-f", TAPE, "erase"], timeout=7200)
     run_cmd(["mt", "-f", TAPE, "rewind"], timeout=max(COMMAND_TIMEOUT, 300))
+    from .tape_layout import forget_tape
+    forget_tape(chosen["volume_tag"], reason=f"{chosen['volume_tag']} erased for rewrite after a full tape")
     update_tape_index_metadata(chosen["volume_tag"], present=True, purpose="available", is_cleaning=False)
     refresh_state()
     return chosen

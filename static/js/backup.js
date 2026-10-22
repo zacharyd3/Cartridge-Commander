@@ -2,12 +2,12 @@
 // ══════════════════════════════════════════════════════════════════════════════
 // BACKUP PAGE
 // ══════════════════════════════════════════════════════════════════════════════
-const BACKUP_PREP_PHASES = new Set(['scanning','preparing','selecting_tape','loading_tape','pre_hook','erasing']);
+const BACKUP_PREP_PHASES = new Set(['scanning','preparing','selecting_tape','loading_tape','pre_hook','erasing','positioning']);
 const BACKUP_STEPS = [
   {label:'Scan & pick tape', phases:['scanning','preparing','selecting_tape']},
   {label:'Load tape',       phases:['loading_tape']},
-  {label:'Pre-backup hook', phases:['pre_hook','erasing']},
-  {label:'Write to tape',   phases:['streaming','cancelling']},
+  {label:'Pre-backup hook', phases:['pre_hook','erasing','positioning']},
+  {label:'Write to tape',   phases:['streaming','changing_tape','cancelling']},
   {label:'Build index',     phases:['indexing']},
   {label:'Verify',          phases:['verifying']},
   {label:'Rewind & unload', phases:['rewinding','unloading','post_hook']},
@@ -86,13 +86,18 @@ function backupJobPanel(bk){
   }
 
   const vol = G.state?.summary?.loaded_volume || '—';
+  // A backup that outgrows its tape continues on further tapes; show them all.
+  const tapes = bk.tapes || [];
+  const tapeCell = tapes.length > 1
+    ? `<div class="cell"><div class="cell-label">Tapes · ${tapes.length}</div><div class="cell-value">${tapeChainHTML(tapes.map(v=>({volume_tag:v})), running ? (bk.current_tape||'') : '')}</div></div>`
+    : `<div class="cell"><div class="cell-label">Tape in drive</div><div class="cell-value lg">${esc(vol)}</div></div>`;
   const speedMB = (bk.speed_bps||0) / (1024*1024);
   const cells = `<div class="cells c5 nobottom">
     <div class="cell"><div class="cell-label">Written</div><div class="cell-value lg">${hBytes(bk.bytes_written)}</div></div>
     <div class="cell"><div class="cell-label">Estimated size</div><div class="cell-value lg">${hBytes(bk.bytes_total)}</div></div>
     <div class="cell"><div class="cell-label">Throughput</div><div class="cell-value lg ${running&&bk.speed_bps>0?'c-green':''}">${hBytes(bk.speed_bps)}/s</div></div>
     <div class="cell"><div class="cell-label">Time remaining</div><div class="cell-value lg">${running && !prep ? fmtSec(bk.eta_seconds) : '—'}</div></div>
-    <div class="cell"><div class="cell-label">Tape in drive</div><div class="cell-value lg">${esc(vol)}</div></div>
+    ${tapeCell}
   </div>`;
 
   const progress = running && prep

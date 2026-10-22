@@ -24,15 +24,16 @@ def _load_backup_records() -> None:
     try:
         with open(BACKUP_RECORDS_FILE) as f:
             shared_state._backup_records = json.load(f)
-        _db_set_json("backup_records", shared_state._backup_records[-500:])
+        _db_set_json("backup_records", shared_state._backup_records[:500])
     except Exception:
         shared_state._backup_records = []
 
 
 def _save_backup_records() -> None:
     from .db import _db_set_json
+    # Records are kept newest-first, so the newest 500 are the head of the list.
     with shared_state._backup_records_lock:
-        payload = list(shared_state._backup_records[-500:])
+        payload = list(shared_state._backup_records[:500])
     _db_set_json("backup_records", payload)
 
 
@@ -158,7 +159,10 @@ def _gfs_completed_streams() -> Dict[str, List[Dict[str, Any]]]:
         records = sorted(shared_state._backup_records, key=lambda r: r.get("started_at", 0))
     streams: Dict[str, List[Dict[str, Any]]] = {}
     for rec in records:
-        if rec.get("status") == "completed" and rec.get("started_at") and rec.get("volume_tag"):
+        # An overwritten backup no longer exists on tape, so it cannot hold a
+        # retention slot (and must not pin its tape).
+        if (rec.get("status") == "completed" and rec.get("started_at")
+                and rec.get("volume_tag") and not rec.get("overwritten")):
             streams.setdefault(gfs_stream_key(rec), []).append(rec)
     return streams
 
@@ -168,25 +172,27 @@ def _gfs_stream_keep(stream: List[Dict[str, Any]], cfg: Dict[str, int]):
 
     ``stream`` must be in chronological order.  Each tier keeps the oldest
     backup per calendar window (month / ISO week), and daily keeps the most
-    recent N backups in this stream.
+    recent N backups in this stream.  Keeping a backup that spans several
+    tapes keeps every tape it is on.
     """
-    monthly_rep: Dict[str, str] = {}   # "YYYY-MM" → volume_tag of oldest record
-    weekly_rep:  Dict[str, str] = {}   # "YYYY-WW" → volume_tag of oldest record
+    from .tape_layout import record_volumes
+    monthly_rep: Dict[str, List[str]] = {}   # "YYYY-MM" → volume_tags of oldest record
+    weekly_rep:  Dict[str, List[str]] = {}   # "YYYY-WW" → volume_tags of oldest record
     for rec in stream:
         dt = datetime.datetime.fromtimestamp(rec["started_at"])
-        vol = rec["volume_tag"]
+        vols = record_volumes(rec)
         ym_key = dt.strftime("%Y-%m")
         if ym_key not in monthly_rep:
-            monthly_rep[ym_key] = vol
+            monthly_rep[ym_key] = vols
         iso_year, iso_week, _ = dt.isocalendar()
         yw_key = f"{iso_year}-{iso_week:02d}"
         if yw_key not in weekly_rep:
-            weekly_rep[yw_key] = vol
+            weekly_rep[yw_key] = vols
 
-    keep_monthly = set(_last_n(list(monthly_rep.values()), cfg["monthly"]))
-    keep_weekly  = set(_last_n(list(weekly_rep.values()),  cfg["weekly"]))
-    recent_vols  = [r["volume_tag"] for r in reversed(stream)]
-    keep_daily   = set(recent_vols[:cfg["daily"]])
+    flat = lambda groups: {v for g in groups for v in g}
+    keep_monthly = flat(_last_n(list(monthly_rep.values()), cfg["monthly"]))
+    keep_weekly  = flat(_last_n(list(weekly_rep.values()),  cfg["weekly"]))
+    keep_daily   = flat(record_volumes(r) for r in list(reversed(stream))[:max(cfg["daily"], 0)])
     return keep_monthly, keep_weekly, keep_daily
 
 
@@ -204,6 +210,8 @@ def gfs_classify(record: Dict[str, Any]) -> str:
     vol = record.get("volume_tag", "")
     recyclable_set = set(gfs_get_recyclable())
 
+    if record.get("overwritten"):
+        return "expired"
     if vol and vol not in recyclable_set and record.get("status") == "completed":
         cfg = get_gfs_config()
         stream = _gfs_completed_streams().get(gfs_stream_key(record), [])
@@ -246,13 +254,14 @@ def gfs_get_recyclable() -> List[str]:
         (rec for stream in streams.values() for rec in stream),
         key=lambda r: r["started_at"],
     )
+    from .tape_layout import record_volumes
     seen: set = set()
     recyclable: List[str] = []
     for rec in all_completed:
-        vol = rec["volume_tag"]
-        if vol not in keep_all and vol not in seen:
-            seen.add(vol)
-            recyclable.append(vol)
+        for vol in record_volumes(rec):
+            if vol not in keep_all and vol not in seen:
+                seen.add(vol)
+                recyclable.append(vol)
 
     return recyclable
 
