@@ -13,10 +13,10 @@ from .flaskapp import app
 from .config import AUTO_REWIND_AFTER, BACKUP_LOG_LEVEL_DEFAULT, BACKUP_ROOT, CHANGER, CLEANING_WAIT_SECONDS, COMMAND_TIMEOUT, ERASE_BEFORE_BACKUP, ICON_PATH, POLL_SECONDS, POST_BACKUP_HOOK, PRE_BACKUP_HOOK, RESTORE_ROOT, SG_DEVICE, TAPE, TAPE_BLOCK_BYTES, VERIFY_AFTER_BACKUP, VERIFY_SAMPLE_MB, WEBUI_PASSWORD
 from . import state as shared_state
 from .state import TapeError, append_inventory_log, current_backup_log_level, is_cleaning_volume_tag, log_action, normalize_backup_log_level, now_ts, request_inventory_pause, request_inventory_resume, request_inventory_stop, run_cmd, set_changer_state, snapshot_backup_job, snapshot_changer_job, snapshot_format_job, snapshot_inventory_job, snapshot_restore_job, snapshot_verify_job
-from .settings import _NOTIFY_DEFAULT_TEMPLATES, build_restore_dest, get_ha_config, get_gfs_config, get_notify_config, get_restore_subfolder_pattern, get_tape_fill_strategy, set_gfs_config, set_ha_config, set_notify_config, set_restore_subfolder_pattern, set_tape_fill_strategy
+from .settings import _NOTIFY_DEFAULT_TEMPLATES, TAPE_FULL_RESERVE_MAX, TAPE_FULL_RESERVE_MIN, build_restore_dest, get_ha_config, get_gfs_config, get_notify_config, get_restore_subfolder_pattern, get_tape_fill_strategy, get_tape_full_reserve_pct, set_gfs_config, set_ha_config, set_notify_config, set_restore_subfolder_pattern, set_tape_fill_strategy, set_tape_full_reserve_pct
 from .changer import ensure_under_backup_root, ensure_under_restore_root, normalize_excludes, get_cleaning_slot, get_mail_slot_info, list_directories, list_restore_directories, refresh_state
 from .db import delete_tape_index, list_all_known_indexes, load_tape_index, mark_tape_archived, read_tape_index_live, save_tape_index, update_tape_index_metadata
-from .drive_history import _save_last_known_loaded_slot, build_loaded_tape_space_info, get_drive_info, get_effective_loaded_slot, space_meta_from_info
+from .drive_history import _save_last_known_loaded_slot, build_loaded_tape_space_info, get_drive_info, get_effective_loaded_slot, space_meta_from_info, tape_fill_status
 from .records import get_backup_records, get_tape_health, gfs_classify, gfs_get_recyclable, gfs_stream_key
 from .mqtt import publish_state_to_mqtt
 from .scheduler import _save_schedules, _update_next_run
@@ -85,7 +85,13 @@ def api_tape_index():
         idx = load_tape_index(vol)
         if idx is None: return jsonify({"ok":False,"error":f"No index for {vol}"}), 404
         return jsonify({"ok":True,**idx})
-    return jsonify({"ok":True,"indexes":list_all_known_indexes()})
+    # Each entry carries tape selection's verdict on whether the tape is full,
+    # so the catalog flags exactly the tapes backups will no longer pick.
+    recyclable = set(gfs_get_recyclable())
+    indexes = list_all_known_indexes()
+    for i in indexes:
+        i["fill"] = tape_fill_status(i["volume_tag"], i, recyclable=i["volume_tag"] in recyclable)
+    return jsonify({"ok":True,"indexes":indexes})
 
 @app.post("/api/tape_index/read")
 def api_tape_index_read():
@@ -924,6 +930,16 @@ def api_settings_tape_strategy_save():
     return jsonify({"ok": True, "detail": f"Tape strategy set to '{strategy}'.",
                     "strategy": strategy})
 
+@app.post("/api/settings/tape_full_reserve")
+def api_settings_tape_full_reserve_save():
+    """Persist the free-space percentage at or below which a tape counts as full."""
+    auth = require_password()
+    if auth is not None: return auth
+    p = request.get_json(silent=True) or {}
+    pct = set_tape_full_reserve_pct(p.get("pct"))
+    return jsonify({"ok": True, "detail": f"Tapes now count as full at {pct}% free or less.",
+                    "pct": pct})
+
 @app.get("/api/settings")
 def api_settings_get():
     auth = require_password()
@@ -940,6 +956,9 @@ def api_settings_get():
         "gfs_weekly_keep": get_gfs_config()["weekly"],
         "gfs_monthly_keep": get_gfs_config()["monthly"],
         "tape_fill_strategy": get_tape_fill_strategy(),
+        "tape_full_reserve_pct": get_tape_full_reserve_pct(),
+        "tape_full_reserve_min": TAPE_FULL_RESERVE_MIN,
+        "tape_full_reserve_max": TAPE_FULL_RESERVE_MAX,
         "restore_root": RESTORE_ROOT,
         "backup_root": BACKUP_ROOT,
         "changer": CHANGER, "tape": TAPE,

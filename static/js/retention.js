@@ -8,6 +8,7 @@ function renderRetentionPage(c){
   const s = G.settings || {};
   const d = s.gfs_daily_keep ?? 7, w = s.gfs_weekly_keep ?? 4, m = s.gfs_monthly_keep ?? 6;
   const strat = s.tape_fill_strategy || 'spread';
+  const reserve = s.tape_full_reserve_pct ?? 5;
   c.insertAdjacentHTML('beforeend', `
     <div class="page-head"><div><h1>Retention &amp; policies</h1><p class="sub">Restore-point retention, tape selection and archive folder naming</p></div></div>
 
@@ -36,6 +37,10 @@ function renderRetentionPage(c){
           <p style="font-size:12.5px;line-height:1.6;color:var(--ink-2)">Applies when the drive is empty. Tapes with enough free space for the whole backup are preferred.</p>
           ${strategyCard('spread','Spread','Round-robin across the library: available, then blank, then least recently used.', strat)}
           ${strategyCard('fill','Fill','Writes to one tape until full, then rolls to the next.', strat)}
+          <div class="field"><label for="tape-full-reserve">Full threshold</label>
+            <div style="display:flex;align-items:center;gap:8px"><input id="tape-full-reserve" class="mono" type="number" min="${s.tape_full_reserve_min ?? 5}" max="${s.tape_full_reserve_max ?? 50}" step="1" value="${reserve}" style="width:88px" oninput="setTxt('tape-full-reserve-eq', reserveEquivalent(this.value))"/><span style="font-size:12.5px;color:var(--ink-2)">% free or less</span></div>
+            <span class="hint">Full tapes are skipped by backups and flagged for archiving on the Tape catalog<span id="tape-full-reserve-eq">${esc(reserveEquivalent(reserve))}</span></span>
+          </div>
           <div id="tape-strategy-result" class="result"></div>
         </div>
       </section>
@@ -123,6 +128,15 @@ function strategyCard(val, title, desc, cur){
     <span><span class="t">${title}</span><span class="d" style="display:block">${desc}</span></span></label>`;
 }
 
+// The full threshold in TB on a typical cartridge in the catalog, e.g. " · ≈ 0.45 TB on a 2.27 TB cartridge".
+function reserveEquivalent(pct){
+  const caps = (G.indexMeta||[]).map(m => m.fill?.capacity_bytes).filter(Boolean).sort((a,b)=>a-b);
+  const cap = caps[Math.floor(caps.length/2)];
+  const p = Number(pct);
+  if(!cap || !(p > 0)) return '';
+  return ` · ≈ ${fmtTB(cap*p/100)} on a ${fmtTB(cap)} cartridge`;
+}
+
 function insertPatternToken(t){
   const inp = $('rsp-input'); if(!inp) return;
   const a = inp.selectionStart ?? inp.value.length, b = inp.selectionEnd ?? a;
@@ -165,11 +179,17 @@ async function saveTapeStrategy(){
   const v = document.querySelector('[name=tape-strategy]:checked')?.value;
   if(!res||!v) return;
   res.className='result'; res.textContent='Saving…';
-  const data=await api('/api/settings/tape_strategy','POST',{strategy:v});
-  if(data.ok){
-    if(G.settings) G.settings.tape_fill_strategy=data.strategy;
-    res.className='result ok'; res.textContent=`Saved — ${data.strategy==='fill'?'filling one tape at a time':'spreading across tapes'}`;
-  } else { res.className='result bad'; res.textContent=data.error||'Save failed'; }
+  const [data, rd] = await Promise.all([
+    api('/api/settings/tape_strategy','POST',{strategy:v}),
+    api('/api/settings/tape_full_reserve','POST',{pct:parseInt($('tape-full-reserve')?.value,10)}),
+  ]);
+  if(data.ok && rd.ok){
+    if(G.settings){ G.settings.tape_fill_strategy=data.strategy; G.settings.tape_full_reserve_pct=rd.pct; }
+    // Reflect any clamping the server applied.
+    if($('tape-full-reserve')) $('tape-full-reserve').value=rd.pct;
+    setTxt('tape-full-reserve-eq', reserveEquivalent(rd.pct));
+    res.className='result ok'; res.textContent=`Saved — ${data.strategy==='fill'?'filling one tape at a time':'spreading across tapes'} · full at ${rd.pct}% free or less`;
+  } else { res.className='result bad'; res.textContent=(data.ok ? rd : data).error||'Save failed'; }
 }
 
 async function previewRestorePattern(){
