@@ -76,13 +76,15 @@ function recordsPanelHTML(){
     ${recs.slice(0,50).map(r => {
       const [l,t] = S[r.status] || [r.status, ''];
       const ver = r.verified===true ? `<span class="status-dot ok">Verified</span>` : r.verified===false ? `<span class="status-dot bad">Failed</span>` : '<span class="text-muted">—</span>';
+      const segs = recordSegments(r);
       const notes = [
+        r.overwritten ? `<div class="sub" style="color:var(--bad)" title="${esc(r.overwritten_reason||'')}">${ico('alert',12)} Overwritten on tape — no longer restorable</div>` : '',
         r.skipped_count ? `<div class="sub" style="color:var(--warn-text)" title="${esc((r.skipped_items||[]).join('\n'))}">${ico('alert',12)} ${plural(r.skipped_count,'unreadable item')} skipped</div>` : '',
         r.error ? `<div class="sub" style="color:var(--bad)">${esc(r.error)}</div>` : '',
         r.verify_errors ? `<div class="sub" style="color:var(--bad)">Verify: ${plural(r.verify_errors,'error')}</div>` : '',
       ].join('');
       return `<tr class="${r.status==='failed'?'fail':''}">
-        <td>${badge(l,t)}</td><td class="vol">${esc(r.volume_tag||'—')}</td><td>${esc(fmtWhen(r.started_at))}</td>
+        <td>${badge(l,t)}</td><td class="vol">${segs.length > 1 ? `<div>${badge(`${segs.length} tapes`,'info')}</div><div style="margin-top:4px">${tapeChainHTML(segs)}</div>` : esc(r.volume_tag||'—')}</td><td>${esc(fmtWhen(r.started_at))}</td>
         <td><div>${esc(streamName(recordStream(r)))}</div><div class="sub">${esc(r.mode||'full')}</div></td>
         <td class="num">${hBytes(r.bytes_written||0)}</td>
         <td style="max-width:420px"><div class="path" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc((r.paths||[]).join('\n'))}">${esc((r.paths||[]).map(p=>p.split('/').pop()||p).join(', '))}</div>

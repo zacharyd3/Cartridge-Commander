@@ -1,10 +1,9 @@
 """restore_worker module (split from the original monolithic app.py)."""
 
 import os
-import time
 import threading
 import subprocess
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from .config import CHANGER, COMMAND_TIMEOUT, TAPE, TAPE_BLOCK_BYTES
 from . import state as shared_state
 from .state import TapeError, append_restore_log, is_cleaning_volume_tag, log_action, log_exit_codes, log_pipeline, log_traceback, now_ts, run_cmd, set_restore_state
@@ -13,17 +12,70 @@ from .drive_history import _record_restore_done, _save_last_known_loaded_slot
 from .mqtt import publish_state_to_mqtt
 
 
+def _plan_restore(volume_tag: str, tape_paths: List[str]) -> List[Dict[str, Any]]:
+    """Work out which tape files to read for a restore.
+
+    Returns [{"name", "chain", "paths"}], one per backup involved.  Paths are
+    grouped by their top-level folder — each backup's archive folder — and
+    each backup is read from wherever it starts, across as many tapes as it
+    spans.  An empty path list means everything on ``volume_tag``.
+    """
+    from .tape_layout import find_session, get_sessions
+    plans: Dict[tuple, Dict[str, Any]] = {}
+
+    def _add(chain: List[Dict[str, Any]], name: str, paths: Optional[List[str]]) -> None:
+        key = tuple((c["volume_tag"], int(c.get("file_number") or 0)) for c in chain)
+        plan = plans.setdefault(key, {"name": name, "chain": chain, "paths": []})
+        if paths is None:
+            plan["paths"] = None
+        elif plan["paths"] is not None:
+            plan["paths"].extend(paths)
+
+    if not tape_paths:
+        sessions = get_sessions(volume_tag)
+        if not sessions:
+            # Written before sessions were tracked: one archive at the start.
+            _add([{"volume_tag": volume_tag, "file_number": 0}], volume_tag, None)
+        for s in sessions:
+            if s.get("broken") or s.get("status") in ("failed", "cancelled"):
+                append_restore_log(f"Skipping {s.get('dirname') or 'tape file ' + str(s.get('file_number'))}: "
+                                   f"{'part of it was overwritten' if s.get('broken') else 'backup did not complete'}.")
+                continue
+            chain = s.get("chain") or [{"volume_tag": volume_tag, "file_number": int(s.get("file_number") or 0)}]
+            _add(chain, s.get("dirname") or volume_tag, None)
+        return list(plans.values())
+
+    by_top: Dict[str, List[str]] = {}
+    for p in tape_paths:
+        by_top.setdefault(p.split("/", 1)[0], []).append(p)
+    for top, paths in by_top.items():
+        sess = find_session(top, prefer_vol=volume_tag)
+        if sess and sess.get("broken"):
+            raise TapeError(f"{top} can no longer be restored: part of it was overwritten.")
+        if sess:
+            _add(sess["chain"], top, paths)
+        else:
+            # Unknown to the catalog (e.g. written before positions were
+            # tracked): it can only be the archive at the start of the tape.
+            _add([{"volume_tag": volume_tag, "file_number": 0}], top, paths)
+    return list(plans.values())
+
+
 def restore_worker(volume_tag: str, tape_paths: List[str], dest: str, slot: Optional[int]) -> None:
     """
     Restore files from tape.
     tape_paths: list of paths as they appear in the tar archive.
-                If empty, restore everything.
+                If empty, restore everything on the tape.
     dest: local destination directory.
-    slot: if set, load this slot first (then unload after).
+    slot: kept for API compatibility — tapes are loaded as needed, since a
+          backup may start on, or continue onto, other tapes.
 
     Supports cancellation via /api/restore/stop — sets shared_state._stop_restore which
     terminates the tar process and marks the job cancelled.
     """
+    from .tape_layout import ChainReader, chain_label, loaded_volume
+    from .backup_worker import _find_return_slot
+    from .db import update_tape_index_metadata
     if is_cleaning_volume_tag(volume_tag):
         raise TapeError(f"{volume_tag} is a cleaning tape and cannot be restored.")
 
@@ -39,135 +91,123 @@ def restore_worker(volume_tag: str, tape_paths: List[str], dest: str, slot: Opti
     append_restore_log(f"Restore started. Volume: {volume_tag}, {len(tape_paths)} path(s) → {dest}")
     publish_state_to_mqtt(refresh_state())
 
-    loaded_slot = None
+    initially_loaded = ""
     try:
         os.makedirs(dest, exist_ok=True)
-
-        # Load tape if requested
-        if slot is not None:
-            cur = (shared_state._state_cache.get("drive") or {})
-            if not cur.get("empty"):
-                existing = cur.get("loaded_from_slot") or shared_state._last_known_loaded_slot
-                if existing:
-                    append_restore_log(f"Unloading current tape (slot {existing}) first…")
-                    run_cmd(["mtx","-f",CHANGER,"unload",str(existing),"0"], timeout=max(COMMAND_TIMEOUT,120))
-            append_restore_log(f"Loading slot {slot} into drive…")
-            run_cmd(["mtx","-f",CHANGER,"load",str(slot),"0"], timeout=max(COMMAND_TIMEOUT,120))
-            _save_last_known_loaded_slot(slot)
-            loaded_slot = slot
-            time.sleep(3)
-
-        # Rewind
-        append_restore_log("Rewinding tape…")
-        set_restore_state(status="rewinding")
-        publish_state_to_mqtt(refresh_state())
-        run_cmd(["mt","-f",TAPE,"rewind"], timeout=max(COMMAND_TIMEOUT,300))
-
-        # Build tar extract command — use dd | tar so block size matches what was written.
-        # tar reading directly from the tape device uses the wrong block size (512 B)
-        # which causes ENOMEM on drives that wrote at 512 KiB blocks.
-        tar_paths = [p.lstrip("/") for p in tape_paths]
-
-        # FIX: was "status=none" which swallowed all dd errors silently.
-        # "status=progress" lets us capture and log dd read errors/stats so failures
-        # are visible and diagnosable instead of producing an empty/corrupt restore.
-        dd_cmd  = ["dd", f"if={TAPE}", f"bs={TAPE_BLOCK_BYTES}", "status=progress"]
-        tar_cmd = ["tar", "-C", dest, "-xvf", "-"]
-        if tar_paths:
-            tar_cmd += tar_paths
-
-        append_restore_log(
-            f"Extracting {'all files' if not tar_paths else str(len(tar_paths))+' path(s)'} to {dest}…  "
-            f"(dd bs={TAPE_BLOCK_BYTES//1024}KiB | tar -x)"
-        )
-        set_restore_state(status="extracting")
-        publish_state_to_mqtt(refresh_state())
-
-        log_pipeline("restore", dd_cmd, tar_cmd)
-        dd_proc = subprocess.Popen(dd_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        tar_proc = subprocess.Popen(
-            tar_cmd,
-            stdin=dd_proc.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        # FIX: close our copy of dd's stdout in the parent so that when tar exits
-        # and closes its end, dd receives SIGPIPE / sees a broken pipe and exits
-        # cleanly instead of hanging forever waiting for a reader.
-        dd_proc.stdout.close()
-        shared_state._restore_proc = tar_proc
+        initially_loaded = loaded_volume()
+        plans = _plan_restore(volume_tag, tape_paths)
+        if not plans:
+            raise TapeError(f"Nothing restorable found on {volume_tag}.")
+        tapes_needed = []
+        for plan in plans:
+            for c in plan["chain"]:
+                if c["volume_tag"] not in tapes_needed:
+                    tapes_needed.append(c["volume_tag"])
+        if len(tapes_needed) > 1 or tapes_needed != [volume_tag]:
+            append_restore_log(f"Tapes needed: {', '.join(tapes_needed)}.")
 
         count = 0
-        _tar_stderr_lines: List[str] = []
-        _dd_stderr_lines: List[str] = []
-
-        def _drain_tar_stderr():
-            try:
-                for raw in tar_proc.stderr:
-                    _tar_stderr_lines.append(raw.decode(errors="ignore").rstrip())
-            except Exception:
-                pass
-
-        # FIX: drain dd stderr in a background thread so dd never blocks on a full
-        # stderr pipe.  Previously dd's stderr was never read, so dd could stall
-        # waiting to write progress output, stalling the entire pipeline.
-        def _drain_dd_stderr():
-            try:
-                for raw in dd_proc.stderr:
-                    line = raw.decode(errors="ignore").rstrip()
-                    _dd_stderr_lines.append(line)
-            except Exception:
-                pass
-
-        t_err    = threading.Thread(target=_drain_tar_stderr, daemon=True)
-        t_dd_err = threading.Thread(target=_drain_dd_stderr,  daemon=True)
-        t_err.start()
-        t_dd_err.start()
-
-        # Drain stdout (verbose file list) — this is what drives progress.
-        # No timeout: a full restore of hundreds of GB can take many hours.
-        for raw_line in tar_proc.stdout:
+        for n, plan in enumerate(plans, 1):
             if shared_state._stop_restore:
-                append_restore_log("Stop requested — terminating restore.")
-                try: tar_proc.terminate()
-                except Exception: pass
-                try: dd_proc.terminate()
-                except Exception: pass
                 break
-            line = raw_line.decode(errors="ignore").strip()
-            if line:
-                count += 1
-                if count % 200 == 0:
-                    append_restore_log(f"Extracted {count:,} files… (last: {line[-80:]})")
-                    set_restore_state(last_message=f"Extracting… {count:,} files")
-                    publish_state_to_mqtt(refresh_state())
-
-        tar_proc.stdout.close()
-        t_err.join(timeout=10)
-
-        rc    = tar_proc.wait()
-        dd_rc = dd_proc.wait(timeout=30)
-        log_exit_codes("restore", dd=dd_rc, tar=rc)
-        t_dd_err.join(timeout=5)
-        shared_state._restore_proc = None
-
-        tar_err_text = "\n".join(_tar_stderr_lines[-10:])
-
-        # FIX: check dd exit code.  dd exits non-zero on read errors (e.g. EIO,
-        # ENOMEDIUM).  Previously this was never checked so a completely failed
-        # read (0 bytes transferred) looked identical to a successful restore.
-        if dd_rc not in (0, None) and not shared_state._stop_restore:
-            dd_err_text = "\n".join(_dd_stderr_lines[-5:]).strip()
-            raise TapeError(
-                f"dd read from tape failed (exit {dd_rc}). "
-                f"Check that the correct tape is loaded and the drive is ready. "
-                f"dd stderr: {dd_err_text[-200:]}"
+            chain = plan["chain"]
+            prefix = f"[{n}/{len(plans)}] " if len(plans) > 1 else ""
+            # Build tar extract command — use dd | tar so block size matches what was written.
+            # tar reading directly from the tape device uses the wrong block size (512 B)
+            # which causes ENOMEM on drives that wrote at 512 KiB blocks.
+            tar_paths = [p.lstrip("/") for p in (plan["paths"] or [])]
+            tar_cmd = ["tar", "-C", dest, "-xvf", "-"] + tar_paths
+            append_restore_log(
+                f"{prefix}Extracting {'all of ' + plan['name'] if not tar_paths else str(len(tar_paths))+' path(s)'} "
+                f"to {dest}…  (dd bs={TAPE_BLOCK_BYTES//1024}KiB | tar -x)"
+                + (f" — backup spans {len(chain)} tapes: {chain_label(chain)}" if len(chain) > 1
+                   else f" — {chain[0]['volume_tag']}, tape file {chain[0].get('file_number', 0)}")
             )
+            set_restore_state(status="extracting")
+            publish_state_to_mqtt(refresh_state())
 
-        # Log dd stats (bytes read, speed) at normal verbosity so we can see
-        # whether any data actually came off the tape.
-        if _dd_stderr_lines:
-            append_restore_log(f"dd: {_dd_stderr_lines[-1]}", )
+            log_pipeline("restore", ["dd", f"if={TAPE}", f"bs={TAPE_BLOCK_BYTES}", "status=progress"], tar_cmd)
+            read_fd, write_fd = os.pipe()
+            tar_proc = subprocess.Popen(
+                tar_cmd,
+                stdin=read_fd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            # Close our copy of the read end so that when tar exits the dd feeding
+            # the pipe gets SIGPIPE and exits instead of hanging.
+            os.close(read_fd)
+            shared_state._restore_proc = tar_proc
+            _dd_holder: List[Any] = [None]
+            reader = ChainReader(chain, write_fd, log=append_restore_log,
+                                 should_stop=lambda: shared_state._stop_restore,
+                                 proc_holder=lambda p: _dd_holder.__setitem__(0, p))
+            reader.start()
+
+            _tar_stderr_lines: List[str] = []
+
+            def _drain_tar_stderr():
+                try:
+                    for raw in tar_proc.stderr:
+                        _tar_stderr_lines.append(raw.decode(errors="ignore").rstrip())
+                except Exception:
+                    pass
+
+            t_err = threading.Thread(target=_drain_tar_stderr, daemon=True)
+            t_err.start()
+
+            # Drain stdout (verbose file list) — this is what drives progress.
+            # No timeout: a full restore of hundreds of GB can take many hours.
+            for raw_line in tar_proc.stdout:
+                if shared_state._stop_restore:
+                    append_restore_log("Stop requested — terminating restore.")
+                    for _p in (tar_proc, _dd_holder[0]):
+                        try:
+                            if _p is not None:
+                                _p.terminate()
+                        except Exception:
+                            pass
+                    break
+                line = raw_line.decode(errors="ignore").strip()
+                if line:
+                    count += 1
+                    if count % 200 == 0:
+                        append_restore_log(f"Extracted {count:,} files… (last: {line[-80:]})")
+                        set_restore_state(last_message=f"Extracting… {count:,} files")
+                        publish_state_to_mqtt(refresh_state())
+
+            tar_proc.stdout.close()
+            t_err.join(timeout=10)
+            rc = tar_proc.wait()
+            if shared_state._stop_restore and _dd_holder[0] is not None:
+                try:
+                    _dd_holder[0].terminate()
+                except Exception:
+                    pass
+            reader.join(timeout=60)
+            log_exit_codes("restore", tar=rc)
+            shared_state._restore_proc = None
+
+            tar_err_text = "\n".join(_tar_stderr_lines[-10:])
+
+            if shared_state._stop_restore:
+                break
+
+            # A failed read (tape missing, EIO, …) must not look like a restore
+            # that simply found nothing.
+            if reader.error:
+                raise TapeError(
+                    f"{reader.error}. Check that the tape is in the library and the drive is ready."
+                    + (f" dd stderr: {' | '.join(reader.dd_stderr[-3:])[-200:]}" if reader.dd_stderr else "")
+                )
+            append_restore_log(f"{prefix}Read {reader.bytes_read:,} bytes from tape.")
+
+            if rc not in (0, 1):  # tar rc=1 = warnings (e.g. timestamps)
+                detail = tar_err_text.strip()[-300:] or f"tar exited rc={rc}"
+                raise TapeError(f"tar exited rc={rc}: {detail}")
+
+            if tar_err_text.strip():
+                append_restore_log(f"tar warnings: {tar_err_text.strip()[-200:]}")
 
         if shared_state._stop_restore:
             set_restore_state(
@@ -178,20 +218,14 @@ def restore_worker(volume_tag: str, tape_paths: List[str], dest: str, slot: Opti
             log_action("restore", True, f"Cancelled after {count} files from {volume_tag}")
             return
 
-        if rc not in (0, 1):  # tar rc=1 = warnings (e.g. timestamps)
-            detail = tar_err_text.strip()[-300:] or f"tar exited rc={rc}"
-            raise TapeError(f"tar exited rc={rc}: {detail}")
-
-        if tar_err_text.strip():
-            append_restore_log(f"tar warnings: {tar_err_text.strip()[-200:]}")
-
         set_restore_state(
             running=False, status="completed", finished_at=now_ts(),
             last_message=f"Restore complete — {count:,} files extracted to {dest}.", error=None,
         )
         append_restore_log(f"Restore complete. {count:,} files extracted.")
-        log_action("restore", True, f"Restored {len(tape_paths) or 'all'} path(s) from {volume_tag} → {dest}")
-        _record_restore_done(volume_tag)
+        log_action("restore", True, f"Restored {len(tape_paths) or 'all'} path(s) from {', '.join(tapes_needed)} → {dest}")
+        for _v in tapes_needed:
+            _record_restore_done(_v)
 
     except Exception as e:
         shared_state._restore_proc = None
@@ -203,13 +237,19 @@ def restore_worker(volume_tag: str, tape_paths: List[str], dest: str, slot: Opti
     finally:
         shared_state._restore_proc = None
         shared_state._stop_restore = False
-        if loaded_slot is not None:
-            try:
-                append_restore_log(f"Unloading tape back to slot {loaded_slot}…")
-                run_cmd(["mtx","-f",CHANGER,"unload",str(loaded_slot),"0"], timeout=max(COMMAND_TIMEOUT,120))
-                _save_last_known_loaded_slot(None)
-            except Exception as ue:
-                append_restore_log(f"Warning: could not unload: {ue}")
+        # Put back any tape this restore loaded; leave a tape that was already
+        # in the drive where it was.
+        try:
+            now_loaded = loaded_volume()
+            if now_loaded and now_loaded != initially_loaded:
+                ret = _find_return_slot(now_loaded)
+                if ret:
+                    append_restore_log(f"Unloading {now_loaded} back to slot {ret}…")
+                    run_cmd(["mtx","-f",CHANGER,"unload",str(ret),"0"], timeout=max(COMMAND_TIMEOUT,120))
+                    _save_last_known_loaded_slot(None)
+                    update_tape_index_metadata(now_loaded, present=True, last_seen_slot=ret)
+        except Exception as ue:
+            append_restore_log(f"Warning: could not unload: {ue}")
         publish_state_to_mqtt(refresh_state())
 
 # ---------------------------------------------------------------------------

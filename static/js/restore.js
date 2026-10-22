@@ -163,10 +163,11 @@ async function loadRestoreIndex(vol, silent){
       picker.style.display = '';
       const latest = sessions.length - 1;
       const cur = (_restoreCwd.split('/')[0]) || sessions[latest];
+      const partsOf = Object.fromEntries(tapeSessions(vol).map(x => [x.dirname, x.parts||1]));
       picker.innerHTML = `<span class="section-label">Backup session</span><div class="sess-options cards" role="radiogroup" aria-label="Backup session">`
         + [...sessions].reverse().map(s => {
           const i = sessions.indexOf(s);
-          return `<button type="button" role="radio" aria-checked="${s===cur}" class="sess-opt${s===cur?' active':''}" data-session="${esc(s)}"><span class="sess-opt-dot"></span><span class="sess-opt-name" title="${esc(s)}">${esc(s)}/</span>${i===latest?'<span class="sess-opt-badge">Latest</span>':''}</button>`;
+          return `<button type="button" role="radio" aria-checked="${s===cur}" class="sess-opt${s===cur?' active':''}" data-session="${esc(s)}"><span class="sess-opt-dot"></span><span class="sess-opt-name" title="${esc(s)}">${esc(s)}/</span>${partsOf[s]>1?`<span class="sess-opt-badge span" title="This backup spans ${partsOf[s]} tapes">${ico('link',11)} ${partsOf[s]} tapes</span>`:''}${i===latest?'<span class="sess-opt-badge">Latest</span>':''}</button>`;
         }).join('') + `</div>`;
       picker.querySelectorAll('.sess-opt').forEach(btn => btn.onclick = () => navigateRestoreSession(btn.dataset.session));
     } else { picker.style.display = 'none'; picker.innerHTML = ''; }
@@ -272,6 +273,20 @@ async function stopRestore(){
   await pollOnce();
 }
 
+// Tapes a restore reads, in order.  A backup that spans tapes is read from its
+// first tape onwards, whichever of its tapes was picked; restoring a whole tape
+// reads every complete backup on it.
+function restoreTapesNeeded(vol, paths){
+  const ss = tapeSessions(vol);
+  const byName = Object.fromEntries(ss.map(s => [s.dirname, s]));
+  const picked = paths.length
+    ? [...new Set(paths.map(p => p.split('/')[0]))].map(n => byName[n]).filter(Boolean)
+    : ss.filter(s => !s.broken && !['failed','cancelled'].includes(s.status));
+  const tapes = [];
+  for(const s of picked) for(const c of (s.chain || [{volume_tag:vol}])) if(!tapes.includes(c.volume_tag)) tapes.push(c.volume_tag);
+  return tapes.length ? tapes : [vol];
+}
+
 // ── Destination dialog ───────────────────────────────────────────────────────
 // fromDrawer: the tape drawer already filled G.restorePending (paths + volume).
 function openRestoreDestDrawer(restoreAll, fromDrawer=false){
@@ -307,6 +322,16 @@ function openRestoreDestDrawer(restoreAll, fromDrawer=false){
     setTxt('rd-sub', `Destination for ${plural(G.restorePending.paths.length,'item')}`);
     list.innerHTML = G.restorePending.paths.slice(0,20).map(p => `<div class="file-row${p.endsWith('/')?' dir':''}" style="cursor:default"><span class="file-icon">${ico(p.endsWith('/')?'folder':'file',15)}</span><span class="file-name">${esc(p)}</span></div>`).join('')
       + (G.restorePending.paths.length>20 ? `<div class="empty-state">${G.restorePending.paths.length-20} more</div>` : '');
+  }
+  // A restore touching a backup that spans tapes reads several tapes.
+  const needed = restoreTapesNeeded(vol, G.restorePending.paths || []);
+  if(needed.length > 1 || needed[0] !== vol){
+    const inLib = v => (!drive.empty && drive.volume_tag === v) || (G.state?.slots||[]).some(s => s.full && s.volume_tag === v);
+    const missing = needed.filter(v => !inLib(v));
+    $('restore-src-text').innerHTML = `Reads ${needed.length} tape${needed.length>1?'s':''} in turn, loading each automatically `
+      + tapeChainHTML(needed.map(v => ({volume_tag:v})), '')
+      + (missing.length ? `<br>Not in the library — insert before starting: <span class="mono">${esc(missing.join(', '))}</span>` : '');
+    $('restore-src-note').className = 'callout ' + (missing.length ? 'warn' : 'info');
   }
   $('restore-dest-drawer').classList.add('open');
 

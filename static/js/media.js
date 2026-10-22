@@ -68,10 +68,12 @@ function backupContentNames(r){
 
 const isoDay = ts => { const d = new Date(ts*1000); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 
-// Text to write on a cartridge: what its completed backups hold and the dates they span,
+// Text to write on a cartridge: what the completed backups still on it hold (including
+// part of one spanning tapes) and the dates they span,
 // e.g. "Photo & Appdata 2026-09-01 – 2026-10-20". Empty when it has no backup records.
 function suggestedTapeLabel(vol){
-  const recs = (G.records||[]).filter(r => r.volume_tag===vol && r.status==='completed' && r.started_at)
+  const recs = (G.records||[]).filter(r => r.status==='completed' && r.started_at && !r.overwritten
+      && recordSegments(r).some(s => s.volume_tag===vol))
     .sort((a,b) => a.started_at - b.started_at);
   if(!recs.length) return '';
   const names = new Map();
@@ -81,6 +83,9 @@ function suggestedTapeLabel(vol){
   const first = isoDay(recs[0].started_at), last = isoDay(recs[recs.length-1].started_at);
   return `${what} ${first===last ? first : `${first} – ${last}`}`;
 }
+
+// Why a tape counts as full (see drive_history.tape_fill_status).
+const fullReason = f => f.hit_eom ? 'ran out of tape on its last write' : `${fmtTB(f.free_bytes)} free, at or below the ${f.reserve_pct}% threshold`;
 
 function labelCopyHTML(text){
   // Wrap between dates, never inside one; the copied text is unchanged.
@@ -157,7 +162,7 @@ function lifetimePanel(){
 function archivePanelHTML(rows){
   const pct = rows[0].meta.fill.reserve_pct;
   return `<section class="panel" aria-label="Ready to archive">
-    ${panelHead('Ready to archive', `${plural(rows.length,'full cartridge')} · ${pct}% free or less · backups no longer select ${rows.length===1?'it':'them'}`,
+    ${panelHead('Ready to archive', `${plural(rows.length,'full cartridge')} · ${pct}% free or less, or out of tape · backups no longer select ${rows.length===1?'it':'them'}`,
       `<button class="btn sm" onclick="showPage('retention')">${ico('sliders',14)}Full threshold</button>`)}
     <div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Volume</th><th>Location</th><th class="num">Free</th><th>Suggested label</th><th style="width:40px"></th></tr></thead>
@@ -237,15 +242,27 @@ function mediaRowHTML(r){
   const sel = G.fmtSelected.has(r.vol);
   return `<tr class="clickable${sel?' sel':''}" data-vol="${esc(r.vol)}">
     <td><input type="checkbox" aria-label="Select ${esc(r.vol)}" ${sel?'checked':''} ${cand?'':'disabled'} onchange="fmtToggle('${jsq(r.vol)}',this.checked)"/></td>
-    <td class="vol">${esc(r.vol)}</td>
+    <td class="vol">${esc(r.vol)}${linkedTapesMark(r)}</td>
     <td>${esc(r.loc)}</td>
-    <td><div class="btn-row" style="gap:6px">${badge(label, tone)}${r.full ? `<span title="${r.meta.fill.reserve_pct}% free or less · backups no longer select it">${badge('Full','warn',true)}</span>` : ''}</div></td>
+    <td><div class="btn-row" style="gap:6px">${badge(label, tone)}${r.full ? `<span title="${esc(fullReason(r.meta.fill))} · backups no longer select it">${badge('Full','warn',true)}</span>` : ''}</div></td>
     <td><div class="tbl-usage">${known ? `<span class="meter"><span style="width:${pct.toFixed(0)}%;background:${meterColor(pct)}"></span></span><span class="v">${toTB(used).toFixed(2)} / ${toTB(cap).toFixed(2)} TB</span>` : '<span class="text-muted">—</span>'}</div></td>
     <td class="num">${r.files ? r.files.toLocaleString() : '—'}</td>
     <td class="num">${r.sessions || '—'}</td>
     <td>${r.where==='drive' && G.state?.backup_job?.running ? 'Writing now' : last ? esc(fmtDate(last)) : '—'}</td>
     <td>${ico('chevR',16,'style="color:var(--muted)"')}</td>
   </tr>`;
+}
+
+// Marker for a tape holding part of a backup that continues on other tapes.
+function linkedTapesMark(r){
+  const others = new Set();
+  for(const sess of (r.meta?.sessions||[])){
+    if((sess.parts||1) < 2) continue;
+    for(const c of (sess.chain||[])) if(c.volume_tag !== r.vol) others.add(c.volume_tag);
+  }
+  if(!others.size) return '';
+  const t = `Holds part of a backup that spans tapes · linked with ${[...others].join(', ')}`;
+  return ` <span title="${esc(t)}" aria-label="${esc(t)}" style="color:var(--accent-ink);vertical-align:-2px">${ico('link',13)}</span>`;
 }
 
 function openCatalogVol(vol){

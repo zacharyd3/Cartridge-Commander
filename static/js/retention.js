@@ -34,9 +34,12 @@ function renderRetentionPage(c){
       <section class="panel" aria-label="Tape selection strategy">
         ${panelHead('Tape selection strategy','',`<button class="btn sm primary" onclick="saveTapeStrategy()">Save</button>`)}
         <div class="panel-body" style="gap:12px">
-          <p style="font-size:12.5px;line-height:1.6;color:var(--ink-2)">Applies when the drive is empty. Tapes with enough free space for the whole backup are preferred.</p>
+          <p style="font-size:12.5px;line-height:1.6;color:var(--ink-2)">Applies when the drive is empty. Backups are appended after what is already on a tape; tapes with enough free space for the whole backup are preferred.</p>
           ${strategyCard('spread','Spread','Round-robin across the library: available, then blank, then least recently used.', strat)}
           ${strategyCard('fill','Fill','Writes to one tape until full, then rolls to the next.', strat)}
+          <label class="toggle-row" for="span-toggle" style="padding-left:0;padding-right:0"><span><span class="t" style="display:block">Span backups across tapes</span>
+              <span class="d" style="display:block">A backup bigger than the free space on its tape continues on the next tape; the tapes are linked in the catalog. Off: such a backup is refused.</span></span>
+            <span class="toggle"><input type="checkbox" id="span-toggle" ${s.allow_tape_spanning!==false?'checked':''}/><span class="toggle-track"></span></span></label>
           <div class="field"><label for="tape-full-reserve">Full threshold</label>
             <div style="display:flex;align-items:center;gap:8px"><input id="tape-full-reserve" class="mono" type="number" min="${s.tape_full_reserve_min ?? 5}" max="${s.tape_full_reserve_max ?? 50}" step="1" value="${reserve}" style="width:88px" oninput="setTxt('tape-full-reserve-eq', reserveEquivalent(this.value))"/><span style="font-size:12.5px;color:var(--ink-2)">% free or less</span></div>
             <span class="hint">Full tapes are skipped by backups and flagged for archiving on the Tape catalog<span id="tape-full-reserve-eq">${esc(reserveEquivalent(reserve))}</span></span>
@@ -179,16 +182,17 @@ async function saveTapeStrategy(){
   const v = document.querySelector('[name=tape-strategy]:checked')?.value;
   if(!res||!v) return;
   res.className='result'; res.textContent='Saving…';
+  const span = !!$('span-toggle')?.checked;
   const [data, rd] = await Promise.all([
-    api('/api/settings/tape_strategy','POST',{strategy:v}),
+    api('/api/settings/tape_strategy','POST',{strategy:v, span}),
     api('/api/settings/tape_full_reserve','POST',{pct:parseInt($('tape-full-reserve')?.value,10)}),
   ]);
   if(data.ok && rd.ok){
-    if(G.settings){ G.settings.tape_fill_strategy=data.strategy; G.settings.tape_full_reserve_pct=rd.pct; }
+    if(G.settings){ G.settings.tape_fill_strategy=data.strategy; G.settings.allow_tape_spanning=data.span; G.settings.tape_full_reserve_pct=rd.pct; }
     // Reflect any clamping the server applied.
     if($('tape-full-reserve')) $('tape-full-reserve').value=rd.pct;
     setTxt('tape-full-reserve-eq', reserveEquivalent(rd.pct));
-    res.className='result ok'; res.textContent=`Saved — ${data.strategy==='fill'?'filling one tape at a time':'spreading across tapes'} · full at ${rd.pct}% free or less`;
+    res.className='result ok'; res.textContent=`Saved — ${data.strategy==='fill'?'filling one tape at a time':'spreading across tapes'} · ${data.span?'large backups span tapes':'no spanning'} · full at ${rd.pct}% free or less`;
   } else { res.className='result bad'; res.textContent=(data.ok ? rd : data).error||'Save failed'; }
 }
 

@@ -1,25 +1,63 @@
 """verify_worker module (split from the original monolithic app.py)."""
 
-import re
+import os
 import time
 import threading
 import subprocess
-from typing import List, Optional
-from .config import COMMAND_TIMEOUT, TAPE, TAPE_BLOCK_BYTES, VERIFY_SAMPLE_MB
+from typing import Any, Dict, List, Optional
+from .config import TAPE, TAPE_BLOCK_BYTES, VERIFY_SAMPLE_MB
 from . import state as shared_state
 
 
-def verify_worker(vol: str, backup_record_id: Optional[str] = None) -> None:
+def _chains_to_verify(vol: str, log) -> List[Dict[str, Any]]:
+    """Every backup on ``vol`` worth verifying, as {"dirname", "chain"}.
+
+    Backups are appended one after another, so a tape can hold several; one
+    that started on another tape is verified from its first tape.  Partial
+    (failed/cancelled) and broken backups are skipped: they are known to be
+    incomplete.
     """
-    Read back the tape and verify integrity.
+    from .tape_layout import get_sessions
+    sessions = get_sessions(vol)
+    if not sessions:
+        # Written before sessions were tracked: one archive at the start.
+        return [{"dirname": "", "chain": [{"volume_tag": vol, "file_number": 0}]}]
+    present = {str(s.get("volume_tag") or "").strip()
+               for s in (shared_state._state_cache.get("slots") or []) if s.get("full")}
+    present.add(str((shared_state._state_cache.get("summary") or {}).get("loaded_volume") or "").strip())
+    out, seen = [], set()
+    for s in sessions:
+        name = s.get("dirname") or f"file {s.get('file_number')}"
+        if name in seen:
+            continue
+        seen.add(name)
+        if s.get("status") in ("failed", "cancelled") or s.get("broken"):
+            log(f"Skipping {name}: {'part of it was overwritten' if s.get('broken') else 'backup did not complete'}.")
+            continue
+        chain = s.get("chain") or [{"volume_tag": vol, "file_number": int(s.get("file_number") or 0)}]
+        missing = [c["volume_tag"] for c in chain if c["volume_tag"] not in present]
+        if missing:
+            log(f"Skipping {name}: needs tape(s) not in the library: {', '.join(missing)}.")
+            continue
+        out.append({"dirname": s.get("dirname") or "", "chain": chain})
+    return out
+
+
+def verify_worker(vol: str, backup_record_id: Optional[str] = None,
+                  chain: Optional[List[Dict[str, Any]]] = None) -> None:
+    """
+    Read back backups from tape and verify integrity.
+
+    With ``chain`` (as passed after a backup), verifies that one backup, which
+    may span several tapes.  Otherwise verifies every backup on ``vol``.
 
     Strategy:
-      1. Issue a rewind and then poll `mt status` until the drive reports it is
-         sitting at file 0, block 0 (BOT).  The status flags string varies by
-         driver; we parse the numeric file/block fields instead of looking for a
-         "BOT" keyword that not all drivers emit.
-      2. Run  dd if=TAPE bs=BLOCK [count=N] | tar -t -f -  as a pure archive-
-         readability check.  Both stdout and stderr of each process are drained
+      1. For each backup, position the drive at its tape file (rewind, then
+         space forward over filemarks) — loading other tapes first when the
+         backup spans several — and run dd over each segment in order into
+         one pipe (tape_layout.ChainReader).
+      2. Pipe that stream into  tar -t -f -  as a pure archive-readability
+         check.  Both stdout and stderr of each process are drained
          concurrently to prevent pipe-buffer deadlocks.
       3. "Unexpected EOF in archive" is NOT treated as an error when sampling
          (VERIFY_SAMPLE_MB > 0) because dd deliberately truncates the stream
@@ -28,10 +66,11 @@ def verify_worker(vol: str, backup_record_id: Optional[str] = None) -> None:
          the verify log so it is trivial to diagnose any genuine failure.
     """
     from .records import _save_backup_records
-    from .state import append_verify_log, backup_log_allows, bytes_human, calc_eta_seconds, log_action, log_pipeline, log_traceback, now_ts, run_cmd, set_verify_state
+    from .state import append_verify_log, backup_log_allows, bytes_human, calc_eta_seconds, log_action, log_pipeline, log_traceback, now_ts, set_verify_state
     from .mqtt import publish_state_to_mqtt
     from .changer import refresh_state
     from .notify import notify_verify_failure
+    from .tape_layout import ChainReader, chain_label
     set_verify_state(
         running=True, status="preparing", volume_tag=vol,
         started_at=now_ts(), finished_at=None,
@@ -43,254 +82,168 @@ def verify_worker(vol: str, backup_record_id: Optional[str] = None) -> None:
     append_verify_log(
         f"Verification started for {vol}  "
         f"(block={TAPE_BLOCK_BYTES//1024}KiB, "
-        f"sample={'full tape' if not sampling else str(VERIFY_SAMPLE_MB)+'MB'}, "
+        f"sample={'full backup' if not sampling else str(VERIFY_SAMPLE_MB)+'MB per backup'}, "
         f"log={'verbose' if verbose else 'normal'})."
     )
     publish_state_to_mqtt(refresh_state())
 
     errors = 0
     bytes_verified = 0
-
-    def _at_bot(mt_text: str) -> bool:
-        """Return True if mt status indicates the tape is at file 0, block 0 (BOT).
-
-        Different kernel drivers report this differently:
-          - Some emit a "BOT" flag in the general status bits line.
-          - Linux st driver always prints "file number=N, block number=M" —
-            file 0, block 0 means we are at the very beginning.
-        We check both forms so we don't need to know which driver is in use.
-        """
-        t = mt_text.lower()
-        # Explicit BOT keyword
-        if "bot" in t or "beginning of tape" in t:
-            return True
-        # Parse "file number=N, block number=M"
-        fm = re.search(r"file number\s*=\s*(\d+)", t)
-        bm = re.search(r"block number\s*=\s*(\d+)", t)
-        if fm and bm:
-            return int(fm.group(1)) == 0 and int(bm.group(1)) == 0
-        return False
+    read_errors = 0
+    files_total = 0
 
     try:
-        # ── Step 1: rewind then wait for BOT ────────────────────────────────
-        # Issue the rewind immediately — don't wait first.  The old code waited
-        # up to 5 minutes hoping the drive would self-report BOT, but LTO-6
-        # reports "file number=1, block number=0" after a write (positioned at
-        # the end of the last file mark), which never matches "BOT".  Just
-        # rewind and then confirm we are at file 0 block 0.
-        append_verify_log("Rewinding tape before verification…")
-        set_verify_state(status="rewinding")
-        publish_state_to_mqtt(refresh_state())
+        if chain:
+            targets = [{"dirname": "", "chain": chain}]
+        else:
+            refresh_state()
+            targets = _chains_to_verify(vol, append_verify_log)
+        if not targets:
+            append_verify_log("Nothing to verify on this tape.")
 
-        try:
-            run_cmd(["mt", "-f", TAPE, "rewind"], timeout=max(COMMAND_TIMEOUT, 300))
-            append_verify_log("Rewind command issued — waiting for BOT…")
-        except Exception as _rw_err:
-            append_verify_log(f"Warning: rewind returned an error: {_rw_err} — continuing.")
-
-        # Poll mt status until file=0, block=0 (BOT confirmed) or timeout
-        _bot_deadline = time.time() + 120   # 2 minutes max after rewind
-        _bot_confirmed = False
-        while time.time() < _bot_deadline:
-            try:
-                _mt_out = subprocess.run(
-                    ["mt", "-f", TAPE, "status"],
-                    capture_output=True, text=True, timeout=15,
-                )
-                _mt_text = _mt_out.stdout + _mt_out.stderr
-                if verbose:
-                    append_verify_log(f"mt status: {_mt_text.strip()[:300]}")
-                if _at_bot(_mt_text):
-                    _bot_confirmed = True
-                    append_verify_log("Drive confirmed at BOT (file 0, block 0).")
-                    break
-            except Exception as _me:
-                append_verify_log(f"mt status check error: {_me}")
-            time.sleep(3)
-
-        if not _bot_confirmed:
-            append_verify_log(
-                "Warning: could not confirm BOT within 2 min after rewind. "
-                "Proceeding anyway — verify may read from wrong position if drive is still seeking.")
-
-        # Brief settle — some drives need a moment after reaching BOT
-        time.sleep(2)
-
-        # ── Step 2: dd | tar -t ─────────────────────────────────────────────
-        set_verify_state(status="reading_data")
         limit_bytes = VERIFY_SAMPLE_MB * 1024 * 1024 if sampling else None
-        append_verify_log(
-            f"Starting read-back: "
-            f"{'full tape' if not limit_bytes else bytes_human(limit_bytes)} "
-            f"via dd (bs={TAPE_BLOCK_BYTES//1024}KiB) | tar -t"
-        )
         if sampling:
             append_verify_log(
-                f"NOTE: Sampling mode — dd will stop after {VERIFY_SAMPLE_MB} MB. "
+                f"NOTE: Sampling mode — reading stops after {VERIFY_SAMPLE_MB} MB of each backup. "
                 f"'Unexpected EOF' at the sample boundary is expected and not an error."
             )
-        publish_state_to_mqtt(refresh_state())
 
-        dd_cmd = ["dd", f"if={TAPE}", f"bs={TAPE_BLOCK_BYTES}", "status=progress"]
-        if limit_bytes:
-            block_count = max(1, (limit_bytes + TAPE_BLOCK_BYTES - 1) // TAPE_BLOCK_BYTES)
-            dd_cmd += [f"count={block_count}"]
-        append_verify_log(f"dd command: {' '.join(dd_cmd)}")
-
-        log_pipeline("verify", dd_cmd, ["tar", "-t", "-f", "-"])
-        dd_proc  = subprocess.Popen(dd_cmd,  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        tar_proc = subprocess.Popen(
-            ["tar", "-t", "-f", "-"],
-            stdin=dd_proc.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        dd_proc.stdout.close()   # let tar own the read end
-
-        verify_started = now_ts()
-        tar_files_seen   = 0
-        _dd_stderr_lines: List[str] = []
-        _tar_stderr_lines: List[str] = []
-
-        def _drain_tar_stdout():
-            nonlocal tar_files_seen
-            try:
-                for _ in tar_proc.stdout:
-                    tar_files_seen += 1
-            except Exception:
-                pass
-
-        def _drain_tar_stderr():
-            try:
-                for raw in tar_proc.stderr:
-                    _tar_stderr_lines.append(raw.decode(errors="ignore").rstrip())
-            except Exception:
-                pass
-
-        def _drain_dd_stderr():
-            try:
-                for raw in dd_proc.stderr:
-                    _dd_stderr_lines.append(raw.decode(errors="ignore").rstrip())
-            except Exception:
-                pass
-
-        t_tar_out = threading.Thread(target=_drain_tar_stdout, daemon=True)
-        t_tar_err = threading.Thread(target=_drain_tar_stderr, daemon=True)
-        t_dd_err  = threading.Thread(target=_drain_dd_stderr,  daemon=True)
-        t_tar_out.start(); t_tar_err.start(); t_dd_err.start()
-
-        while tar_proc.poll() is None:
-            time.sleep(3)
-            _bv = 0
-            for _line in reversed(_dd_stderr_lines):
-                _m = re.search(r'^(\d+)\s+bytes', _line)
-                if _m:
-                    _bv = int(_m.group(1))
-                    break
-            if _bv:
-                bytes_verified = _bv
-            eta_v = calc_eta_seconds(verify_started, bytes_verified, limit_bytes) if limit_bytes else None
-            set_verify_state(
-                bytes_verified=bytes_verified,
-                last_message=f"Verified {tar_files_seen:,} entries, {bytes_human(bytes_verified)} read…",
-                eta_seconds=eta_v,
-            )
+        for n, target in enumerate(targets, 1):
+            tchain = target["chain"]
+            name = target["dirname"] or chain_label(tchain)
+            prefix = f"[{n}/{len(targets)}] " if len(targets) > 1 else ""
+            append_verify_log(
+                f"{prefix}Verifying {name}"
+                + (f" — spans {len(tchain)} tapes: {chain_label(tchain)}" if len(tchain) > 1
+                   else f" (tape file {tchain[0].get('file_number', 0)})"))
+            set_verify_state(status="reading_data")
             publish_state_to_mqtt(refresh_state())
 
-        t_tar_out.join(timeout=15)
-        t_tar_err.join(timeout=15)
-        # Close tar's pipes now that we've drained them
-        try:
-            tar_proc.stdout.close()
-        except Exception:
-            pass
-        try:
-            tar_proc.stderr.close()
-        except Exception:
-            pass
-        tar_rc = tar_proc.wait(timeout=30)
-        dd_proc.wait(timeout=60)
-        t_dd_err.join(timeout=15)
-        # Explicitly close dd's stderr pipe so the kernel releases the fd
-        # immediately.  Without this, the pipe fd can linger just long enough
-        # for the subsequent `mt rewind` call to see /dev/nst0 as busy.
-        try:
-            dd_proc.stderr.close()
-        except Exception:
-            pass
+            # ── dd (per segment) | tar -t ───────────────────────────────────
+            read_fd, write_fd = os.pipe()
+            log_pipeline("verify", ["dd", f"if={TAPE}", f"bs={TAPE_BLOCK_BYTES}", "status=progress"],
+                         ["tar", "-t", "-f", "-"])
+            tar_proc = subprocess.Popen(
+                ["tar", "-t", "-f", "-"],
+                stdin=read_fd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            os.close(read_fd)   # tar owns the read end
+            reader = ChainReader(tchain, write_fd, log=append_verify_log,
+                                 should_stop=lambda: False, limit_bytes=limit_bytes)
+            reader.start()
 
-        # Brief settle — give the st driver a moment to fully release the
-        # device after dd exits before we issue the rewind.
-        time.sleep(1)
+            verify_started = now_ts()
+            tar_files_seen = [0]
+            _tar_stderr_lines: List[str] = []
 
-        # Final byte count from dd stderr
-        for _line in reversed(_dd_stderr_lines):
-            _m = re.search(r'^(\d+)\s+bytes', _line)
-            if _m:
-                bytes_verified = int(_m.group(1))
-                break
+            def _drain_tar_stdout():
+                try:
+                    for _ in tar_proc.stdout:
+                        tar_files_seen[0] += 1
+                except Exception:
+                    pass
 
-        dd_rc = dd_proc.returncode
+            def _drain_tar_stderr():
+                try:
+                    for raw in tar_proc.stderr:
+                        _tar_stderr_lines.append(raw.decode(errors="ignore").rstrip())
+                except Exception:
+                    pass
 
-        # ── Log diagnostics (always show process results; full stderr if verbose or error) ──
-        append_verify_log(
-            f"Process results: tar rc={tar_rc}, dd rc={dd_rc}, "
-            f"files seen={tar_files_seen:,}, bytes read={bytes_human(bytes_verified)}"
-        )
-        if verbose or tar_rc not in (0, 1):
-            for _l in (_tar_stderr_lines[:50] if _tar_stderr_lines else ["(empty)"]):
-                append_verify_log(f"  tar stderr: {_l[:300]}")
-        if verbose or dd_rc not in (0,):
-            for _l in (_dd_stderr_lines[-10:] if _dd_stderr_lines else ["(empty)"]):
-                append_verify_log(f"  dd stderr: {_l[:300]}")
+            t_tar_out = threading.Thread(target=_drain_tar_stdout, daemon=True)
+            t_tar_err = threading.Thread(target=_drain_tar_stderr, daemon=True)
+            t_tar_out.start(); t_tar_err.start()
 
-        # ── Evaluate result ─────────────────────────────────────────────────
-        # Key rule: "Unexpected EOF in archive" when sampling is NOT an error.
-        # dd stopped feeding data at the count= limit mid-archive; tar seeing
-        # EOF there is the designed behaviour, not a tape defect.
-        read_errors = 0
-        if tar_rc not in (0, 1):
-            tar_err_text = " ".join(_tar_stderr_lines).lower()
-            unexpected_eof = "unexpected eof" in tar_err_text or "eof in archive" in tar_err_text
-
-            if sampling and unexpected_eof and dd_rc == 0:
-                # dd finished cleanly at its count= limit; EOF is expected
-                append_verify_log(
-                    f"ℹ tar rc={tar_rc} with 'Unexpected EOF' — this is normal when sampling "
-                    f"({bytes_human(limit_bytes)} limit reached mid-archive). Not counted as error."
+            base = bytes_verified
+            while tar_proc.poll() is None:
+                time.sleep(3)
+                bytes_verified = base + reader.bytes_read
+                eta_v = calc_eta_seconds(verify_started, reader.bytes_read, limit_bytes) if limit_bytes else None
+                set_verify_state(
+                    bytes_verified=bytes_verified,
+                    last_message=f"{prefix}Verified {tar_files_seen[0]:,} entries, {bytes_human(bytes_verified)} read…",
+                    eta_seconds=eta_v,
                 )
-            else:
+                publish_state_to_mqtt(refresh_state())
+
+            t_tar_out.join(timeout=15)
+            t_tar_err.join(timeout=15)
+            # Close tar's pipes now that we've drained them
+            for _pipe in (tar_proc.stdout, tar_proc.stderr):
+                try:
+                    _pipe.close()
+                except Exception:
+                    pass
+            tar_rc = tar_proc.wait(timeout=30)
+            reader.join(timeout=120)
+            bytes_verified = base + reader.bytes_read
+            files_total += tar_files_seen[0]
+
+            # Brief settle — give the st driver a moment to fully release the
+            # device after dd exits before anything else touches the drive.
+            time.sleep(1)
+
+            # ── Log diagnostics (always show process results; full stderr if verbose or error) ──
+            append_verify_log(
+                f"Process results: tar rc={tar_rc}, "
+                f"files seen={tar_files_seen[0]:,}, bytes read={bytes_human(reader.bytes_read)}"
+                + (f", read error: {reader.error}" if reader.error else "")
+            )
+            if verbose or tar_rc not in (0, 1):
+                for _l in (_tar_stderr_lines[:50] if _tar_stderr_lines else ["(empty)"]):
+                    append_verify_log(f"  tar stderr: {_l[:300]}")
+            if verbose or reader.error:
+                for _l in (reader.dd_stderr[-10:] if reader.dd_stderr else ["(empty)"]):
+                    append_verify_log(f"  dd stderr: {_l[:300]}")
+
+            # ── Evaluate result ─────────────────────────────────────────────
+            # Key rule: "Unexpected EOF in archive" when sampling is NOT an error.
+            # dd stopped feeding data at the sample limit mid-archive; tar seeing
+            # EOF there is the designed behaviour, not a tape defect.
+            failed = False
+            if reader.error:
+                failed = True
+            elif tar_rc not in (0, 1):
+                tar_err_text = " ".join(_tar_stderr_lines).lower()
+                unexpected_eof = "unexpected eof" in tar_err_text or "eof in archive" in tar_err_text
+                if sampling and unexpected_eof:
+                    append_verify_log(
+                        f"ℹ tar rc={tar_rc} with 'Unexpected EOF' — this is normal when sampling "
+                        f"({bytes_human(limit_bytes)} limit reached mid-archive). Not counted as error."
+                    )
+                else:
+                    failed = True
+            elif _tar_stderr_lines and (verbose or tar_rc == 1):
+                for _l in _tar_stderr_lines[:10]:
+                    append_verify_log(f"ℹ tar warning: {_l[:200]}")
+
+            if failed:
                 read_errors += 1
                 errors += 1
                 _tar_summary = "; ".join(_tar_stderr_lines[:5]) or "(no stderr)"
-                _dd_errors   = "; ".join(
-                    l for l in _dd_stderr_lines
-                    if "error" in l.lower() or "failed" in l.lower()
-                )[:200]
                 append_verify_log(
-                    f"✗ tar exited rc={tar_rc} after {tar_files_seen:,} entries "
-                    f"({bytes_human(bytes_verified)} from dd). "
+                    f"✗ {name}: tar exited rc={tar_rc} after {tar_files_seen[0]:,} entries "
+                    f"({bytes_human(reader.bytes_read)} from tape). "
                     f"tar: {_tar_summary[:200]}"
-                    + (f"  dd: {_dd_errors}" if _dd_errors else "")
+                    + (f"  read: {reader.error[:200]}" if reader.error else "")
                 )
-        elif _tar_stderr_lines and (verbose or tar_rc == 1):
-            for _l in _tar_stderr_lines[:10]:
-                append_verify_log(f"ℹ tar warning: {_l[:200]}")
-
-        if dd_rc not in (0,) and not limit_bytes:
-            append_verify_log(
-                f"ℹ dd exited rc={dd_rc} on unlimited read "
-                f"(may simply mean end-of-tape reached)")
+            else:
+                append_verify_log(
+                    f"✓ {name}: archive readable — {tar_files_seen[0]:,} entries, "
+                    f"{bytes_human(reader.bytes_read)} verified."
+                )
 
         if read_errors == 0:
             append_verify_log(
-                f"✓ Archive integrity OK — {tar_files_seen:,} entries readable, "
+                f"✓ Archive integrity OK — {files_total:,} entries readable, "
                 f"{bytes_human(bytes_verified)} verified."
             )
         else:
             append_verify_log(
                 f"✗ Integrity check failed: {read_errors} error(s). "
-                f"Entries read before failure: {tar_files_seen:,}. "
+                f"Entries read: {files_total:,}. "
                 f"Bytes from tape: {bytes_human(bytes_verified)}."
             )
 
@@ -319,7 +272,7 @@ def verify_worker(vol: str, backup_record_id: Optional[str] = None) -> None:
 
         if errors > 0:
             notify_verify_failure(vol, errors,
-                f"{read_errors} read/parse error(s) after {tar_files_seen:,} entries "
+                f"{read_errors} read/parse error(s) after {files_total:,} entries "
                 f"({bytes_human(bytes_verified)} checked)")
 
     except Exception as e:
