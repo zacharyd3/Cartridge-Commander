@@ -71,8 +71,8 @@ function recordsPanelHTML(){
   if(!recs) return head + '<div class="empty-state">Loading…</div>';
   if(!recs.length) return head + '<div class="empty-state">No backup records yet</div>';
   const S = {completed:['Completed','ok'], failed:['Failed','bad'], cancelled:['Cancelled','']};
-  return head + `<div class="tbl-wrap"><table class="tbl"><thead><tr>
-      <th>Status</th><th>Volume</th><th>Started</th><th>Job</th><th class="num">Written</th><th>Sources · archive folder</th><th>Verified</th></tr></thead><tbody>
+  return head + `<div class="tbl-wrap"><table class="tbl" data-sort-key="records"><thead><tr>
+      <th data-sort="text">Status</th><th data-sort="text">Volume</th><th data-sort="num">Started</th><th data-sort="text">Job</th><th class="num" data-sort="num">Written</th><th data-sort="text">Sources · archive folder</th><th data-sort="text">Verified</th></tr></thead><tbody>
     ${recs.slice(0,50).map(r => {
       const [l,t] = S[r.status] || [r.status, ''];
       const ver = r.verified===true ? `<span class="status-dot ok">Verified</span>` : r.verified===false ? `<span class="status-dot bad">Failed</span>` : '<span class="text-muted">—</span>';
@@ -84,10 +84,10 @@ function recordsPanelHTML(){
         r.verify_errors ? `<div class="sub" style="color:var(--bad)">Verify: ${plural(r.verify_errors,'error')}</div>` : '',
       ].join('');
       return `<tr class="${r.status==='failed'?'fail':''}">
-        <td>${badge(l,t)}</td><td class="vol">${segs.length > 1 ? `<div>${badge(`${segs.length} tapes`,'info')}</div><div style="margin-top:4px">${tapeChainHTML(segs)}</div>` : esc(r.volume_tag||'—')}</td><td>${esc(fmtWhen(r.started_at))}</td>
-        <td><div>${esc(streamName(recordStream(r)))}</div><div class="sub">${esc(r.mode||'full')}</div></td>
-        <td class="num">${hBytes(r.bytes_written||0)}</td>
-        <td style="max-width:420px"><div class="path" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc((r.paths||[]).join('\n'))}">${esc((r.paths||[]).map(p=>p.split('/').pop()||p).join(', '))}</div>
+        <td>${badge(l,t)}</td><td class="vol" data-v="${esc(r.volume_tag||'')}">${segs.length > 1 ? `<div>${badge(`${segs.length} tapes`,'info')}</div><div style="margin-top:4px">${tapeChainHTML(segs)}</div>` : esc(r.volume_tag||'—')}</td><td data-v="${r.started_at||''}">${esc(fmtWhen(r.started_at))}</td>
+        <td data-v="${esc(streamName(recordStream(r)))}"><div>${esc(streamName(recordStream(r)))}</div><div class="sub">${esc(r.mode||'full')}</div></td>
+        <td class="num" data-v="${r.bytes_written||0}">${hBytes(r.bytes_written||0)}</td>
+        <td style="max-width:420px" data-v="${esc((r.paths||[]).map(p=>p.split('/').pop()||p).join(', '))}"><div class="path" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc((r.paths||[]).join('\n'))}">${esc((r.paths||[]).map(p=>p.split('/').pop()||p).join(', '))}</div>
           ${r.backup_dirname?`<div class="mono" style="font-size:11.5px;color:var(--accent-ink)">${esc(r.backup_dirname)}/</div>`:''}${notes}</td>
         <td>${ver}</td></tr>`;
     }).join('')}</tbody></table></div>`;
@@ -101,8 +101,8 @@ function actionLogHTML(){
         <button role="tab" aria-selected="${G.actionFilter==='all'}" class="${G.actionFilter==='all'?'on':''}" onclick="G.actionFilter='all';setHTML('actions-panel',actionLogHTML())">All</button>
         <button role="tab" aria-selected="${G.actionFilter==='fail'}" class="${G.actionFilter==='fail'?'on':''}" onclick="G.actionFilter='fail';setHTML('actions-panel',actionLogHTML())">Failures</button>
       </div></div>
-    ${rows.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th style="width:190px">Time</th><th style="width:140px">Action</th><th>Detail</th><th style="width:110px">Result</th></tr></thead><tbody>
-      ${rows.map(a => `<tr class="${a.ok===false?'fail':''}"><td class="mono" style="font-size:12px;color:var(--ink-3)">${esc(fmtTs(a.ts))}</td><td style="font-weight:600">${esc(a.kind)}</td>
+    ${rows.length ? `<div class="tbl-wrap"><table class="tbl" data-sort-key="actions"><thead><tr><th style="width:190px" data-sort="num">Time</th><th style="width:140px" data-sort="text">Action</th><th data-sort="text">Detail</th><th style="width:110px" data-sort="text">Result</th></tr></thead><tbody>
+      ${rows.map(a => `<tr class="${a.ok===false?'fail':''}"><td class="mono" style="font-size:12px;color:var(--ink-3)" data-v="${a.ts||''}">${esc(fmtTs(a.ts))}</td><td style="font-weight:600">${esc(a.kind)}</td>
         <td>${esc(a.detail)}</td><td><span class="status-dot ${a.ok===false?'bad':'ok'}">${a.ok===false?'Failed':'OK'}</span></td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty-state">No actions</div>'}`;
 }

@@ -4,6 +4,10 @@
 // ══════════════════════════════════════════════════════════════════════════════
 
 // Every cartridge the page knows about: library slots, drive, mail slot, off-site.
+const LOC_ORDER = {drive:0, slot:1, mail:2, offsite:3};
+// Sort value for the Location column: drive, then slots by number, mail slot, off-site.
+const locSortKey = r => `${LOC_ORDER[r.where]}-${String(r.slot||0).padStart(4,'0')}`;
+
 function catalogRows(){
   const meta = Object.fromEntries((G.indexMeta||[]).map(m=>[m.volume_tag,m]));
   const recyclable = new Set(G.gfs?.recyclable || []);
@@ -41,8 +45,7 @@ function catalogRows(){
     if(m.purpose==='archived' || (!m.present && m.archived_at)) rows.push(mk(m.volume_tag, `Off-site · last slot ${m.last_seen_slot ?? '?'}`, 'offsite', {slot:m.last_seen_slot}));
   }
   return rows.sort((a,b) => {
-    const order = {drive:0, slot:1, mail:2, offsite:3};
-    return (order[a.where]-order[b.where]) || ((a.slot||0)-(b.slot||0)) || a.vol.localeCompare(b.vol);
+    return (LOC_ORDER[a.where]-LOC_ORDER[b.where]) || ((a.slot||0)-(b.slot||0)) || a.vol.localeCompare(b.vol);
   });
 }
 const CAT_STATE = {
@@ -164,15 +167,15 @@ function archivePanelHTML(rows){
   return `<section class="panel" aria-label="Ready to archive">
     ${panelHead('Ready to archive', `${plural(rows.length,'full cartridge')} · ${pct}% free or less, or out of tape · backups no longer select ${rows.length===1?'it':'them'}`,
       `<button class="btn sm" onclick="showPage('retention')">${ico('sliders',14)}Full threshold</button>`)}
-    <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Volume</th><th>Location</th><th class="num">Free</th><th>Suggested label</th><th style="width:40px"></th></tr></thead>
+    <div class="tbl-wrap"><table class="tbl" data-sort-key="archive">
+      <thead><tr><th data-sort="text">Volume</th><th data-sort="text">Location</th><th class="num" data-sort="num">Free</th><th data-sort="text">Suggested label</th><th style="width:40px"></th></tr></thead>
       <tbody>${rows.map(r => {
         const label = suggestedTapeLabel(r.vol);
         return `<tr class="clickable" onclick="openCatalogVol('${jsq(r.vol)}')">
           <td class="vol">${esc(r.vol)}</td>
-          <td>${esc(r.loc)}</td>
-          <td class="num">${fmtTB(r.meta.fill.free_bytes)}<div class="sub">of ${fmtTB(r.meta.fill.capacity_bytes)}</div></td>
-          <td>${label ? labelCopyHTML(label) : '<span class="text-muted">No backup records</span>'}</td>
+          <td data-v="${locSortKey(r)}">${esc(r.loc)}</td>
+          <td class="num" data-v="${r.meta.fill.free_bytes}">${fmtTB(r.meta.fill.free_bytes)}<div class="sub">of ${fmtTB(r.meta.fill.capacity_bytes)}</div></td>
+          <td data-v="${esc(label)}">${label ? labelCopyHTML(label) : '<span class="text-muted">No backup records</span>'}</td>
           <td>${ico('chevR',16,'style="color:var(--muted)"')}</td>
         </tr>`;
       }).join('')}</tbody>
@@ -209,10 +212,10 @@ function renderMediaTable(){
     ${nSel ? `<div class="select-bar" style="border-radius:0;border-left:none;border-right:none;border-top:none;padding:10px 20px">
       <span class="n">${plural(nSel,'cartridge')} selected for erase</span>
       <div class="btn-row"><button class="btn sm" onclick="fmtSelectNone()">Clear</button><button class="btn sm danger" onclick="$('erase-panel').scrollIntoView({behavior:'smooth'})">Erase selected…</button></div></div>` : ''}
-    <div class="tbl-wrap"><table class="tbl">
+    <div class="tbl-wrap"><table class="tbl" data-sort-key="media">
       <thead><tr>
         <th style="width:44px"><input type="checkbox" aria-label="Select all erasable" ${allChecked?'checked':''} ${visibleCand.length?'':'disabled'} onchange="fmtToggleAll(this.checked)"/></th>
-        <th>Volume</th><th>Location</th><th>Status</th><th>Usage</th><th class="num">Files</th><th class="num">Sessions</th><th>Last backup</th><th style="width:40px"></th>
+        <th data-sort="text">Volume</th><th data-sort="text">Location</th><th data-sort="text">Status</th><th data-sort="num">Usage</th><th class="num" data-sort="num">Files</th><th class="num" data-sort="num">Sessions</th><th data-sort="num">Last backup</th><th style="width:40px"></th>
       </tr></thead>
       <tbody>${rows.length ? rows.map(mediaRowHTML).join('') : `<tr><td colspan="9"><div class="empty-state">No cartridges</div></td></tr>`}</tbody>
     </table></div>`;
@@ -240,15 +243,16 @@ function mediaRowHTML(r){
   const last = G.tapeHistoryMap[r.vol]?.last_backup;
   const cand = isFormatCandidate(r);
   const sel = G.fmtSelected.has(r.vol);
+  const writing = r.where==='drive' && G.state?.backup_job?.running;
   return `<tr class="clickable${sel?' sel':''}" data-vol="${esc(r.vol)}">
     <td><input type="checkbox" aria-label="Select ${esc(r.vol)}" ${sel?'checked':''} ${cand?'':'disabled'} onchange="fmtToggle('${jsq(r.vol)}',this.checked)"/></td>
     <td class="vol">${esc(r.vol)}${linkedTapesMark(r)}</td>
-    <td>${esc(r.loc)}</td>
-    <td><div class="btn-row" style="gap:6px">${badge(label, tone)}${r.full ? `<span title="${esc(fullReason(r.meta.fill))} · backups no longer select it">${badge('Full','warn',true)}</span>` : ''}</div></td>
-    <td><div class="tbl-usage">${known ? `<span class="meter"><span style="width:${pct.toFixed(0)}%;background:${meterColor(pct)}"></span></span><span class="v">${toTB(used).toFixed(2)} / ${toTB(cap).toFixed(2)} TB</span>` : '<span class="text-muted">—</span>'}</div></td>
-    <td class="num">${r.files ? r.files.toLocaleString() : '—'}</td>
+    <td data-v="${locSortKey(r)}">${esc(r.loc)}</td>
+    <td data-v="${esc(label)}${r.full?' full':''}"><div class="btn-row" style="gap:6px">${badge(label, tone)}${r.full ? `<span title="${esc(fullReason(r.meta.fill))} · backups no longer select it">${badge('Full','warn',true)}</span>` : ''}</div></td>
+    <td data-v="${known ? pct.toFixed(2) : ''}"><div class="tbl-usage">${known ? `<span class="meter"><span style="width:${pct.toFixed(0)}%;background:${meterColor(pct)}"></span></span><span class="v">${toTB(used).toFixed(2)} / ${toTB(cap).toFixed(2)} TB</span>` : '<span class="text-muted">—</span>'}</div></td>
+    <td class="num" data-v="${r.files || ''}">${r.files ? r.files.toLocaleString() : '—'}</td>
     <td class="num">${r.sessions || '—'}</td>
-    <td>${r.where==='drive' && G.state?.backup_job?.running ? 'Writing now' : last ? esc(fmtDate(last)) : '—'}</td>
+    <td data-v="${writing ? Date.now()/1000 : last || ''}">${writing ? 'Writing now' : last ? esc(fmtDate(last)) : '—'}</td>
     <td>${ico('chevR',16,'style="color:var(--muted)"')}</td>
   </tr>`;
 }
