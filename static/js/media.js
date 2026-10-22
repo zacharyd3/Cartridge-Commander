@@ -25,7 +25,10 @@ function catalogRows(){
     else if(m && !(sp?.used_bytes)) state = 'blank';
     else state = 'noidx';
     seen.add(vol);
-    return {vol, loc, where, meta:m, sp, files, cln, state, sessions:(m?.backup_dirnames||[]).length, ...extra};
+    // Full under the reserve set on the Retention page: backups no longer select it,
+    // so a tape still in the library is ready to pull for archiving.
+    const full = !cln && where!=='offsite' && !!m?.fill?.full;
+    return {vol, loc, where, meta:m, sp, files, cln, state, full, sessions:(m?.backup_dirnames||[]).length, ...extra};
   };
   for(const s of (G.state?.slots||[])){
     if(!s.full || !s.volume_tag) continue;
@@ -48,6 +51,43 @@ const CAT_STATE = {
 };
 const isFormatCandidate = r => r.where==='slot' && !r.cln;
 
+// ── Suggested labels ─────────────────────────────────────────────────────────
+// Words naming a backup's schedule or kind rather than its content, dropped from job
+// labels so "Weekly Photo Backup" contributes "Photo" to a tape label.
+const LABEL_NOISE = /\b(?:hourly|daily|nightly|bi[- ]?weekly|weekly|fortnightly|monthly|quarterly|yearly|annual(?:ly)?|backups?|jobs?|full|incremental|differential)\b/gi;
+
+// What one backup holds: its job label minus the noise words, or, for an ad-hoc backup
+// or a label that was only noise ("Nightly backup"), the folders it backed up.
+function backupContentNames(r){
+  const name = recordStream(r).replace(/_+/g,' ').replace(LABEL_NOISE,' ').replace(/[()[\]{}]/g,' ')
+    .replace(/\s+[-–—:|](?:\s+[-–—:|])*\s+/g,' - ').replace(/\s+/g,' ').replace(/^[\s\-–—:|,.&+/]+|[\s\-–—:|,.&+/]+$/g,'');
+  if(name) return [name];
+  return (r.paths||[]).map(p => String(p).replace(/\/+$/,'').split('/').pop()).filter(Boolean)
+    .map(d => d.charAt(0).toUpperCase() + d.slice(1));
+}
+
+const isoDay = ts => { const d = new Date(ts*1000); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+
+// Text to write on a cartridge: what its completed backups hold and the dates they span,
+// e.g. "Photo & Appdata 2026-09-01 – 2026-10-20". Empty when it has no backup records.
+function suggestedTapeLabel(vol){
+  const recs = (G.records||[]).filter(r => r.volume_tag===vol && r.status==='completed' && r.started_at)
+    .sort((a,b) => a.started_at - b.started_at);
+  if(!recs.length) return '';
+  const names = new Map();
+  for(const r of recs) for(const n of backupContentNames(r)) if(!names.has(n.toLowerCase())) names.set(n.toLowerCase(), n);
+  const n = [...names.values()];
+  const what = n.length > 3 ? `${n.slice(0,3).join(', ')} +${n.length-3} more` : n.length > 1 ? `${n.slice(0,-1).join(', ')} & ${n[n.length-1]}` : n[0] || 'Backups';
+  const first = isoDay(recs[0].started_at), last = isoDay(recs[recs.length-1].started_at);
+  return `${what} ${first===last ? first : `${first} – ${last}`}`;
+}
+
+function labelCopyHTML(text){
+  // Wrap between dates, never inside one; the copied text is unchanged.
+  const shown = esc(text).replace(/\d{4}-\d{2}-\d{2}/g, '<span class="d">$&</span>');
+  return `<span class="label-sug"><span class="t">${shown}</span><button type="button" class="btn xs" data-text="${esc(text)}" onclick="event.stopPropagation();copyText(this.dataset.text,this)">${ico('copy',13)}Copy</button></span>`;
+}
+
 function renderMediaPage(c){
   if(!G.state){ c.innerHTML='<div class="empty-state">Loading…</div>'; return; }
   const rows = catalogRows();
@@ -57,6 +97,8 @@ function renderMediaPage(c){
       <div class="actions"><button class="btn" onclick="startInventory('quick')">${ico('zap',15)}Quick scan</button></div>
     </div>`);
   c.insertAdjacentHTML('beforeend', `<div class="grid stretch g-3">${catalogStatePanel(rows)}${fillLevelPanel(rows)}${lifetimePanel()}</div>`);
+  const full = rows.filter(r => r.full);
+  if(full.length) c.insertAdjacentHTML('beforeend', archivePanelHTML(full));
 
   const tbl = el('section','panel');
   tbl.setAttribute('aria-label','Cartridges');
@@ -111,18 +153,41 @@ function lifetimePanel(){
   </section>`;
 }
 
+// Full cartridges still in the library, with what to write on each before pulling it.
+function archivePanelHTML(rows){
+  const pct = rows[0].meta.fill.reserve_pct;
+  return `<section class="panel" aria-label="Ready to archive">
+    ${panelHead('Ready to archive', `${plural(rows.length,'full cartridge')} · ${pct}% free or less · backups no longer select ${rows.length===1?'it':'them'}`,
+      `<button class="btn sm" onclick="showPage('retention')">${ico('sliders',14)}Full threshold</button>`)}
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Volume</th><th>Location</th><th class="num">Free</th><th>Suggested label</th><th style="width:40px"></th></tr></thead>
+      <tbody>${rows.map(r => {
+        const label = suggestedTapeLabel(r.vol);
+        return `<tr class="clickable" onclick="openCatalogVol('${jsq(r.vol)}')">
+          <td class="vol">${esc(r.vol)}</td>
+          <td>${esc(r.loc)}</td>
+          <td class="num">${fmtTB(r.meta.fill.free_bytes)}<div class="sub">of ${fmtTB(r.meta.fill.capacity_bytes)}</div></td>
+          <td>${label ? labelCopyHTML(label) : '<span class="text-muted">No backup records</span>'}</td>
+          <td>${ico('chevR',16,'style="color:var(--muted)"')}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+  </section>`;
+}
+
 function renderMediaTable(){
   const p = $('media-table-panel'); if(!p) return;
   const all = catalogRows();
   const tabs = [
     ['all','All', all.length],
     ['library','In library', all.filter(r=>r.where!=='offsite').length],
+    ['full','Full', all.filter(r=>r.full).length],
     ['archived','Archived', all.filter(r=>r.where==='offsite').length],
     ['cleaning','Cleaning', all.filter(r=>r.cln).length],
   ];
   const f = G.mediaFilter.trim().toLowerCase();
   const rows = all.filter(r =>
-    (G.mediaTab==='all' || (G.mediaTab==='library' && r.where!=='offsite') || (G.mediaTab==='archived' && r.where==='offsite') || (G.mediaTab==='cleaning' && r.cln))
+    (G.mediaTab==='all' || (G.mediaTab==='library' && r.where!=='offsite') || (G.mediaTab==='full' && r.full) || (G.mediaTab==='archived' && r.where==='offsite') || (G.mediaTab==='cleaning' && r.cln))
     && (!f || r.vol.toLowerCase().includes(f)));
   // Drop selections for tapes that are no longer erase candidates.
   const cand = new Set(all.filter(isFormatCandidate).map(r=>r.vol));
@@ -174,13 +239,18 @@ function mediaRowHTML(r){
     <td><input type="checkbox" aria-label="Select ${esc(r.vol)}" ${sel?'checked':''} ${cand?'':'disabled'} onchange="fmtToggle('${jsq(r.vol)}',this.checked)"/></td>
     <td class="vol">${esc(r.vol)}</td>
     <td>${esc(r.loc)}</td>
-    <td>${badge(label, tone)}</td>
+    <td><div class="btn-row" style="gap:6px">${badge(label, tone)}${r.full ? `<span title="${r.meta.fill.reserve_pct}% free or less · backups no longer select it">${badge('Full','warn',true)}</span>` : ''}</div></td>
     <td><div class="tbl-usage">${known ? `<span class="meter"><span style="width:${pct.toFixed(0)}%;background:${meterColor(pct)}"></span></span><span class="v">${toTB(used).toFixed(2)} / ${toTB(cap).toFixed(2)} TB</span>` : '<span class="text-muted">—</span>'}</div></td>
     <td class="num">${r.files ? r.files.toLocaleString() : '—'}</td>
     <td class="num">${r.sessions || '—'}</td>
     <td>${r.where==='drive' && G.state?.backup_job?.running ? 'Writing now' : last ? esc(fmtDate(last)) : '—'}</td>
     <td>${ico('chevR',16,'style="color:var(--muted)"')}</td>
   </tr>`;
+}
+
+function openCatalogVol(vol){
+  const r = catalogRows().find(x => x.vol===vol);
+  if(r) openCatalogRow(r);
 }
 
 function openCatalogRow(r){

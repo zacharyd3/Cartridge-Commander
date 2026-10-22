@@ -26,12 +26,14 @@ def _pick_backup_tape(required_bytes: int = 0) -> Dict[str, Any]:
         is filled before moving on, then available/recyclable, then blank.
         Handy for pulling a full tape for offsite storage.
 
-    Never picks cleaning tapes.  If ``required_bytes`` is given and no tape can
-    hold the whole backup, raises TapeError (multi-tape spanning is not
-    supported).  Returns a dict with 'volume_tag' and 'slot'.
+    Never picks cleaning tapes, or tapes that are full under the configured
+    reserve (see drive_history.tape_fill_status).  If ``required_bytes`` is
+    given and no tape can hold the whole backup, raises TapeError (multi-tape
+    spanning is not supported).  Returns a dict with 'volume_tag' and 'slot'.
     """
     from .records import gfs_get_recyclable
     from .db import list_all_known_indexes
+    from .drive_history import tape_fill_status
     from .state import TapeError, bytes_human, is_cleaning_volume_tag
     from .changer import refresh_state
     from .settings import get_tape_fill_strategy
@@ -56,11 +58,6 @@ def _pick_backup_tape(required_bytes: int = 0) -> Dict[str, Any]:
     with shared_state._drive_history_lock:
         drive_hist_snap = dict(shared_state._drive_history)
 
-    # LTO-6 native capacity (2.5 TB).  Used as the fallback when the index
-    # has no capacity_bytes entry (e.g. tapes that were never queried via
-    # sg_logs).  Adjust via env var LTO_NATIVE_CAPACITY_TB if needed.
-    _LTO_NATIVE_BYTES = float(os.getenv("LTO_NATIVE_CAPACITY_TB", "2.5")) * 1e12
-
     candidates = []
     skipped_full: List[str] = []
     best_remaining = 0.0     # largest free space seen — for the fail-fast message
@@ -79,25 +76,18 @@ def _pick_backup_tape(required_bytes: int = 0) -> Dict[str, Any]:
         # (the one that sorted first alphabetically after bucket ordering).
         last_bk = dh.get("last_backup") or idx.get("last_backup_ts") or 0
 
-        # FIX: skip tapes whose accumulated logical bytes exceed the tape's
-        # native capacity (with 5% headroom).  total_backup_bytes accumulates
-        # the uncompressed source size across all backups on this tape.
-        # Even with good compression a tape cannot hold more data than its
-        # native rating.  Without this check the picker kept appending to
-        # KB2785L6 well past the 2.5 TB mark because nothing ever excluded it.
-        capacity   = float(idx.get("capacity_bytes") or 0) or _LTO_NATIVE_BYTES
-        used_bytes = float(dh.get("total_backup_bytes") or idx.get("used_bytes") or 0)
-        is_full    = (used_bytes >= capacity * 0.95) and not is_recyclable
-
-        if is_full:
+        # FIX: skip full tapes.  Without this check the picker kept appending
+        # to KB2785L6 well past the 2.5 TB mark because nothing ever excluded
+        # it.  Usage comes from the catalog (reset when a tape is erased), not
+        # drive_history's lifetime total, which would keep an erased tape full.
+        fill = tape_fill_status(vol, idx, recyclable=is_recyclable)
+        if fill["full"]:
             skipped_full.append(vol)
             continue
 
-        # Usable free space, using the same 5% headroom as the full check.  An
-        # available/recyclable tape is treated as empty because its contents
+        # An available/recyclable tape counts as empty because its contents
         # will be overwritten.
-        usable = capacity * 0.95
-        remaining = usable if is_available else max(usable - used_bytes, 0.0)
+        remaining = float(fill["writable_bytes"])
         best_remaining = max(best_remaining, remaining)
         # Whether this tape can hold the whole pending backup (spanning is not
         # supported, so a tape that can't fit it all is a last resort).
@@ -129,10 +119,12 @@ def _pick_backup_tape(required_bytes: int = 0) -> Dict[str, Any]:
 
     if not candidates:
         if skipped_full:
+            from .settings import get_tape_full_reserve_pct
             raise TapeError(
-                f"No writable tape found — {len(skipped_full)} tape(s) are at capacity "
-                f"({', '.join(skipped_full)}). "
-                "Erase a tape or mark one as 'available' to continue."
+                f"No writable tape found — {len(skipped_full)} tape(s) are full "
+                f"(free space at or below the {get_tape_full_reserve_pct()}% reserve: "
+                f"{', '.join(skipped_full)}). "
+                "Erase a tape, mark one as 'available', or insert a blank tape to continue."
             )
         raise TapeError("No suitable backup tape found in the library.")
 

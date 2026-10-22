@@ -46,7 +46,7 @@ function showPage(name){
     Promise.all([ensureRecords(), ensureSchedules()]).then(()=>refreshIfOn(['library']));
   }
   if(name==='log') ensureRecords(true).then(()=>refreshIfOn(['log']));
-  if(name==='media') Promise.all([ensureGfs(), pollLibraryData()]).then(()=>refreshIfOn(['media']));
+  if(name==='media') Promise.all([ensureGfs(), ensureRecords(), pollLibraryData()]).then(()=>refreshIfOn(['media']));
   if(name==='retention') Promise.all([ensureSettings(true), ensureGfs(true)]).then(()=>refreshIfOn(['retention']));
   if(name==='backup') ensureSettings().then(()=>refreshIfOn(['backup']));
   if(name==='restore') pollLibraryData().then(()=>refreshIfOn(['restore']));
