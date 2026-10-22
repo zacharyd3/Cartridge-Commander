@@ -135,6 +135,28 @@ function jsq(v){ return escHtml(String(v??'').replace(/\\/g,'\\\\').replace(/'/g
 function is_cleaning_vol(vol){ return /^CLN/i.test(vol||''); }
 function plural(n, w, p){ return `${n} ${n===1?w:(p||w+'s')}`; }
 
+// Copy text to the clipboard, flashing the result on `btn`. navigator.clipboard only
+// exists in a secure context, which a plain-http LAN address isn't, so fall back to a
+// hidden textarea and execCommand there.
+async function copyText(text, btn){
+  let ok = false;
+  try { if(window.isSecureContext && navigator.clipboard){ await navigator.clipboard.writeText(text); ok = true; } } catch(e){}
+  if(!ok){
+    const ta = el('textarea');
+    ta.value = text; ta.readOnly = true;
+    ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand('copy'); } catch(e){}
+    ta.remove();
+  }
+  if(btn){
+    const prev = btn.innerHTML;
+    btn.innerHTML = `${ico(ok?'check':'x',13)}${ok?'Copied':'Copy failed'}`;
+    setTimeout(() => { btn.innerHTML = prev; }, 1500);
+  }
+  return ok;
+}
+
 // ── Icons (inline stroke SVG) ────────────────────────────────────────────────
 const ICONS = {
   link:'<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
@@ -180,6 +202,7 @@ const ICONS = {
   minus:'<path d="M5 12h14"/>',
   circle:'<circle cx="12" cy="12" r="6"/>',
   save:'<path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8M7 21v-7h10v7"/>',
+  copy:'<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 };
 function ico(name, size=16, attrs=''){
   return `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${attrs?' '+attrs:''}>${ICONS[name]||''}</svg>`;

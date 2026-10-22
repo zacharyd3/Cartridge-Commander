@@ -267,6 +267,57 @@ def build_tape_space_info(volume_tag: str, drive: Optional[Dict[str, Any]] = Non
     }
 
 
+# Share of a cartridge's capacity tape selection always leaves unwritten when
+# sizing a backup against it: "used" counts the uncompressed tar stream against
+# the drive's native rating, so it is only an estimate.
+WRITE_HEADROOM_PCT = 5
+
+# Capacity assumed when the catalog has none for a tape (e.g. it was never
+# queried via sg_logs).  LTO-6 native by default; adjust via LTO_NATIVE_CAPACITY_TB.
+_FALLBACK_CAPACITY_BYTES = float(os.getenv("LTO_NATIVE_CAPACITY_TB", "2.5")) * 1e12
+
+
+def tape_fill_status(volume_tag: str, idx: Optional[Dict[str, Any]] = None,
+                     recyclable: bool = False) -> Dict[str, Any]:
+    """How full a tape is, judged the way tape selection judges it.
+
+    A tape is full once its free space is at or below the configured reserve
+    (a percentage of capacity), or when its last write ran into end-of-media
+    (``hit_eom``), whatever the catalog estimates its used space to be: tape
+    selection skips it and the tape catalog flags it as ready to archive.  A
+    tape marked available, or past GFS retention (``recyclable``), is never
+    full -- its contents are due to be overwritten, so the whole tape is
+    writable.
+
+    ``usable_bytes`` is the tape's capacity less the WRITE_HEADROOM_PCT safety
+    margin, and ``writable_bytes`` what a backup appended after the data
+    already on it may still use.
+    """
+    from .settings import get_tape_full_reserve_pct
+    idx = idx or {}
+    space = idx.get("space") or build_tape_space_info(volume_tag, idx=idx)
+    capacity = float(idx.get("capacity_bytes") or 0) or _FALLBACK_CAPACITY_BYTES
+    used = float(space.get("used_bytes") or 0)
+    purpose = str(idx.get("purpose") or "").strip().lower()
+    reusable = recyclable or purpose in ("available", "recyclable")
+    sessions = sorted(idx.get("sessions") or [], key=lambda s: int(s.get("file_number") or 0))
+    hit_eom = bool(sessions and sessions[-1].get("ended_at_eom"))
+    reserve_pct = get_tape_full_reserve_pct()
+    free = max(capacity - used, 0.0)
+    usable = capacity * (100 - WRITE_HEADROOM_PCT) / 100
+    return {
+        "full": not reusable and (hit_eom or free <= capacity * reserve_pct / 100),
+        "hit_eom": hit_eom,
+        "reusable": reusable,
+        "capacity_bytes": int(capacity),
+        "used_bytes": int(used),
+        "free_bytes": int(free),
+        "usable_bytes": int(usable),
+        "writable_bytes": int(usable if reusable else max(usable - used, 0.0)),
+        "reserve_pct": reserve_pct,
+    }
+
+
 def space_meta_from_info(info: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "lto_generation": info.get("lto_generation"),

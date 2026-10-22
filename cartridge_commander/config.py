@@ -49,6 +49,10 @@ TAPE_FILL_STRATEGY   = os.getenv("TAPE_FILL_STRATEGY",   "spread").strip().lower
 # another tape instead of refusing to start (needs mbuffer).  Editable from the UI.
 ALLOW_TAPE_SPANNING  = os.getenv("ALLOW_TAPE_SPANNING",  "true").strip().lower() == "true"
 
+# A tape counts as full (skipped by tape selection, flagged for archiving) once
+# its free space is at or below this percentage of its capacity.
+TAPE_FULL_RESERVE_PCT = os.getenv("TAPE_FULL_RESERVE_PCT", "5")
+
 # Incremental backups
 INCREMENTAL_DIR      = os.getenv("INCREMENTAL_DIR",      "/var/lib/tl2000/incremental")
 

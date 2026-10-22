@@ -8,6 +8,7 @@ function renderRetentionPage(c){
   const s = G.settings || {};
   const d = s.gfs_daily_keep ?? 7, w = s.gfs_weekly_keep ?? 4, m = s.gfs_monthly_keep ?? 6;
   const strat = s.tape_fill_strategy || 'spread';
+  const reserve = s.tape_full_reserve_pct ?? 5;
   c.insertAdjacentHTML('beforeend', `
     <div class="page-head"><div><h1>Retention &amp; policies</h1><p class="sub">Restore-point retention, tape selection and archive folder naming</p></div></div>
 
@@ -39,6 +40,10 @@ function renderRetentionPage(c){
           <label class="toggle-row" for="span-toggle" style="padding-left:0;padding-right:0"><span><span class="t" style="display:block">Span backups across tapes</span>
               <span class="d" style="display:block">A backup bigger than the free space on its tape continues on the next tape; the tapes are linked in the catalog. Off: such a backup is refused.</span></span>
             <span class="toggle"><input type="checkbox" id="span-toggle" ${s.allow_tape_spanning!==false?'checked':''}/><span class="toggle-track"></span></span></label>
+          <div class="field"><label for="tape-full-reserve">Full threshold</label>
+            <div style="display:flex;align-items:center;gap:8px"><input id="tape-full-reserve" class="mono" type="number" min="${s.tape_full_reserve_min ?? 5}" max="${s.tape_full_reserve_max ?? 50}" step="1" value="${reserve}" style="width:88px" oninput="setTxt('tape-full-reserve-eq', reserveEquivalent(this.value))"/><span style="font-size:12.5px;color:var(--ink-2)">% free or less</span></div>
+            <span class="hint">Full tapes are skipped by backups and flagged for archiving on the Tape catalog<span id="tape-full-reserve-eq">${esc(reserveEquivalent(reserve))}</span></span>
+          </div>
           <div id="tape-strategy-result" class="result"></div>
         </div>
       </section>
@@ -89,7 +94,7 @@ function gfsSideHTML(){
           {v:counts.weekly, color:TIER_COLOR.weekly, label:'Weekly'},
           {v:counts.monthly, color:TIER_COLOR.monthly, label:'Monthly'},
           {v:counts.expired, color:TIER_COLOR.expired, label:'Recyclable'},
-        ], {center:recs.length, sub:'records', aria:`${counts.daily} daily, ${counts.weekly} weekly, ${counts.monthly} monthly, ${counts.expired} recyclable`})}
+        ], {center:recs.length, sub:'backups', aria:`${counts.daily} daily, ${counts.weekly} weekly, ${counts.monthly} monthly, ${counts.expired} recyclable`})}
         ${legendHTML([
           {color:TIER_COLOR.daily, label:'Daily', value:counts.daily},
           {color:TIER_COLOR.weekly, label:'Weekly', value:counts.weekly},
@@ -114,17 +119,25 @@ function gfsClassificationHTML(){
   const recs = (G.gfs?.records || []).slice(0,30);
   if(!recs.length) return '';
   return `<div style="border-top:1px solid var(--line-2)">
-    <div class="panel-head" style="border-bottom:none"><h2 style="font-size:13px">Recent record classification</h2><span class="meta">Last ${recs.length} records</span></div>
-    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Tier</th><th>Volume</th><th>Stream (job)</th><th>Started</th><th>Status</th></tr></thead><tbody>
+    <div class="panel-head" style="border-bottom:none"><h2 style="font-size:13px">Recent record classification</h2><span class="meta">Last ${plural(recs.length,'completed backup')}</span></div>
+    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Tier</th><th>Volume</th><th>Stream (job)</th><th>Started</th></tr></thead><tbody>
     ${recs.map(r => `<tr><td>${badge(r.gfs_class==='expired'?'recyclable':r.gfs_class, 'wide t-'+r.gfs_class)}</td><td class="vol">${esc(r.volume_tag||'—')}</td>
-      <td>${esc(r.stream==='(unlabeled)'?'Ad-hoc':r.stream||'—')}</td><td>${esc(fmtWhen(r.started_at))}</td>
-      <td><span class="status-dot ${r.status==='completed'?'ok':r.status==='cancelled'?'neutral':'bad'}">${esc(r.status)}</span></td></tr>`).join('')}
+      <td>${esc(r.stream==='(unlabeled)'?'Ad-hoc':r.stream||'—')}</td><td>${esc(fmtWhen(r.started_at))}</td></tr>`).join('')}
     </tbody></table></div></div>`;
 }
 
 function strategyCard(val, title, desc, cur){
   return `<label class="check-card${val===cur?' selected':''}"><input type="radio" name="tape-strategy" value="${val}" ${val===cur?'checked':''} onchange="document.querySelectorAll('[name=tape-strategy]').forEach(r=>r.closest('label').classList.toggle('selected',r.checked))"/>
     <span><span class="t">${title}</span><span class="d" style="display:block">${desc}</span></span></label>`;
+}
+
+// The full threshold in TB on a typical cartridge in the catalog, e.g. " · ≈ 0.45 TB on a 2.27 TB cartridge".
+function reserveEquivalent(pct){
+  const caps = (G.indexMeta||[]).map(m => m.fill?.capacity_bytes).filter(Boolean).sort((a,b)=>a-b);
+  const cap = caps[Math.floor(caps.length/2)];
+  const p = Number(pct);
+  if(!cap || !(p > 0)) return '';
+  return ` · ≈ ${fmtTB(cap*p/100)} on a ${fmtTB(cap)} cartridge`;
 }
 
 function insertPatternToken(t){
@@ -170,11 +183,17 @@ async function saveTapeStrategy(){
   if(!res||!v) return;
   res.className='result'; res.textContent='Saving…';
   const span = !!$('span-toggle')?.checked;
-  const data=await api('/api/settings/tape_strategy','POST',{strategy:v, span});
-  if(data.ok){
-    if(G.settings){ G.settings.tape_fill_strategy=data.strategy; G.settings.allow_tape_spanning=data.span; }
-    res.className='result ok'; res.textContent=`Saved — ${data.strategy==='fill'?'filling one tape at a time':'spreading across tapes'} · ${data.span?'large backups span tapes':'no spanning'}`;
-  } else { res.className='result bad'; res.textContent=data.error||'Save failed'; }
+  const [data, rd] = await Promise.all([
+    api('/api/settings/tape_strategy','POST',{strategy:v, span}),
+    api('/api/settings/tape_full_reserve','POST',{pct:parseInt($('tape-full-reserve')?.value,10)}),
+  ]);
+  if(data.ok && rd.ok){
+    if(G.settings){ G.settings.tape_fill_strategy=data.strategy; G.settings.allow_tape_spanning=data.span; G.settings.tape_full_reserve_pct=rd.pct; }
+    // Reflect any clamping the server applied.
+    if($('tape-full-reserve')) $('tape-full-reserve').value=rd.pct;
+    setTxt('tape-full-reserve-eq', reserveEquivalent(rd.pct));
+    res.className='result ok'; res.textContent=`Saved — ${data.strategy==='fill'?'filling one tape at a time':'spreading across tapes'} · ${data.span?'large backups span tapes':'no spanning'} · full at ${rd.pct}% free or less`;
+  } else { res.className='result bad'; res.textContent=(data.ok ? rd : data).error||'Save failed'; }
 }
 
 async function previewRestorePattern(){

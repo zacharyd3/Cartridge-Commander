@@ -6,7 +6,7 @@ import time
 import datetime
 import threading
 from typing import Any, Dict, Optional
-from .config import GFS_DAILY_KEEP, GFS_MONTHLY_KEEP, GFS_WEEKLY_KEEP, HA_NOTIFY_ENABLED, HA_NOTIFY_SERVICE, HA_NOTIFY_TOKEN, HA_NOTIFY_URL, RESTORE_ROOT, RESTORE_SUBFOLDER_PATTERN, TAPE_FILL_STRATEGY, ALLOW_TAPE_SPANNING
+from .config import GFS_DAILY_KEEP, GFS_MONTHLY_KEEP, GFS_WEEKLY_KEEP, HA_NOTIFY_ENABLED, HA_NOTIFY_SERVICE, HA_NOTIFY_TOKEN, HA_NOTIFY_URL, RESTORE_ROOT, RESTORE_SUBFOLDER_PATTERN, TAPE_FILL_STRATEGY, ALLOW_TAPE_SPANNING, TAPE_FULL_RESERVE_PCT
 
 
 _restore_subfolder_pattern: str = RESTORE_SUBFOLDER_PATTERN
@@ -235,6 +235,48 @@ def _load_allow_tape_spanning() -> None:
     if isinstance(val, bool):
         with _tape_spanning_lock:
             _allow_tape_spanning = val
+
+# ---------------------------------------------------------------------------
+# Tape "full" reserve runtime config
+# ---------------------------------------------------------------------------
+# A tape is full once its free space is at or below this percentage of its
+# capacity: tape selection stops picking it and the catalog flags it for
+# archiving.  The floor matches the safety margin tape selection always leaves
+# unwritten (drive_history.WRITE_HEADROOM_PCT), so a tape that isn't full
+# always has room left to write.
+TAPE_FULL_RESERVE_MIN = 5
+TAPE_FULL_RESERVE_MAX = 50
+
+def _coerce_reserve_pct(value: Any, fallback: int) -> int:
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError):
+        return fallback
+    return max(TAPE_FULL_RESERVE_MIN, min(n, TAPE_FULL_RESERVE_MAX))
+
+_tape_full_reserve_lock = threading.Lock()
+_tape_full_reserve_pct: int = _coerce_reserve_pct(TAPE_FULL_RESERVE_PCT, TAPE_FULL_RESERVE_MIN)
+
+def get_tape_full_reserve_pct() -> int:
+    with _tape_full_reserve_lock:
+        return _tape_full_reserve_pct
+
+def set_tape_full_reserve_pct(pct: Any) -> int:
+    from .db import _db_set_json
+    global _tape_full_reserve_pct
+    with _tape_full_reserve_lock:
+        _tape_full_reserve_pct = _coerce_reserve_pct(pct, _tape_full_reserve_pct)
+        result = _tape_full_reserve_pct
+    _db_set_json("tape_full_reserve_pct", result)
+    return result
+
+def _load_tape_full_reserve_pct() -> None:
+    from .db import _db_get_json
+    global _tape_full_reserve_pct
+    val = _db_get_json("tape_full_reserve_pct", None)
+    if val is not None:
+        with _tape_full_reserve_lock:
+            _tape_full_reserve_pct = _coerce_reserve_pct(val, _tape_full_reserve_pct)
 
 def _render_notify_template(key: str, **tokens: Any) -> str:
     """Render a notification template key with the given token substitutions."""

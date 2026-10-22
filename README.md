@@ -151,6 +151,15 @@ The GFS retention keep counts (`GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`,
 from the **Retention** page in the UI; the saved values
 are persisted and take precedence over the env vars.
 
+`TAPE_FULL_RESERVE_PCT` (default `5`, range 5–50) sets when a tape counts as
+full: once its free space is at or below that percentage of its capacity,
+backups stop selecting it and the **Tape catalog** flags it as ready to
+archive, with a suggested label to write on the cartridge (e.g.
+`Photo & Appdata 2026-09-01 – 2026-10-20`). Set it higher to retire tapes
+whose leftover space is too small for your usual backup, e.g. `20` to treat a
+2.5 TB tape with 0.5 TB left as full. It can also be changed next to the tape
+selection strategy on the **Retention** page; the saved value takes precedence.
+
 ### How backups are laid out on tape
 
 Each backup is one tape file (a tar stream closed by a filemark), and new

@@ -86,7 +86,6 @@ async function openTapeDrawer(info){
   G.tdSlot=info.slot; G.tdVol=info.volume_tag||''; G.tdInDrive=info.in_drive;
   G.tdSlotFull=info.full; G.tdFiles=[]; G.tdFiltered=[]; G.tdSelected=new Set();
   G.tdCwd=''; G.tdTree={children:{}};
-  ensureRecords();
 
   const vol=G.tdVol;
   const loadedFromSlot = info.loaded_from_slot ?? getEffectiveLoadedSlot();
@@ -96,6 +95,7 @@ async function openTapeDrawer(info){
   const space = info.in_drive ? (G.driveInfo?.space || info.space || knownIdx?.space || null) : (info.space || knownIdx?.space || null);
   const isCleaning = !!(info.is_cleaning || (info.purpose||'')==='cleaning' || (vol && is_cleaning_vol(vol)));
   const isArchived = !!info.is_archived;
+  const fill = !isCleaning && !isArchived ? meta?.fill : null;
 
   $('td-title').textContent = vol || `Slot ${info.slot}`;
   $('td-meta').textContent = info.in_drive
@@ -107,6 +107,7 @@ async function openTapeDrawer(info){
     info.in_drive ? badge('In drive','info') : isArchived ? badge('Archived','warn') : info.is_import_export ? badge('Mail slot','warn') : info.full ? badge('In slot','') : badge('Empty',''),
     info.in_drive && unloadTargetSlot ? badge(`Unload target ${unloadTargetSlot}`,'info') : '',
     isCleaning ? badge('Cleaning','cln') : info.has_index ? badge('Indexed','ok') : vol ? badge('Not indexed','warn') : '',
+    fill?.full ? badge('Full','warn',true) : '',
     space?.lto_generation ? badge(`LTO-${space.lto_generation}`,'info') : '',
   ].filter(Boolean).join('');
 
@@ -120,6 +121,17 @@ async function openTapeDrawer(info){
       <span>Written</span><span class="mono">${h.total_backup_bytes?hBytes(h.total_backup_bytes):'—'}</span>
       ${meta?.file_count?`<span>Files</span><span class="mono">${meta.file_count.toLocaleString()}</span>`:''}
     </div>${tapeSessionsHTML(vol)}` : '';
+  // The label is built from backup records, which may still be loading.
+  const showLabel = () => {
+    if(G.tdVol !== vol) return;
+    const label = vol && !isCleaning ? suggestedTapeLabel(vol) : '';
+    const wrap = $('td-label');
+    wrap.style.display = label ? '' : 'none';
+    wrap.innerHTML = label ? `<div class="field"><span class="section-label">Suggested label</span>${labelCopyHTML(label)}
+      ${fill?.full ? `<span class="hint">Full · ${esc(fullReason(fill))}, so backups no longer select it. ${info.in_drive ? 'A backup started while it is loaded still writes to it, so unload it first.' : 'Ready to archive.'}</span>` : ''}</div>` : '';
+  };
+  showLabel();
+  ensureRecords().then(showLabel);
   $('td-result').textContent=''; $('td-result').className='result';
 
   // ── Actions ──────────────────────────────────────────────────────────────
