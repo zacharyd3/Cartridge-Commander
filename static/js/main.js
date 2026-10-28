@@ -39,6 +39,7 @@ async function pollOnce(){
 
 // Boot
 hydrateIcons();
+setTheme(currentTheme());
 ensureSettings().then(s => {
   if(s?.sg_device) setTxt('side-sg', s.sg_device);
   else setTxt('side-sg', 'not set');

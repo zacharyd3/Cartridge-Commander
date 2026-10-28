@@ -206,6 +206,8 @@ const ICONS = {
   sortAsc:'<path d="m6 15 6-6 6 6"/>',
   sortDesc:'<path d="m6 9 6 6 6-6"/>',
   sortNone:'<path d="m8 9 4-4 4 4M8 15l4 4 4-4"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
+  moon:'<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/>',
 };
 function ico(name, size=16, attrs=''){
   return `<svg class="ico" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${attrs?' '+attrs:''}>${ICONS[name]||''}</svg>`;

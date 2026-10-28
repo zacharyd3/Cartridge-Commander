@@ -11,6 +11,16 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"/>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"/>
+<script>
+// Theme before first paint, so a dark page never flashes white: a saved choice wins,
+// otherwise follow the OS. The topbar toggle (shell.js) changes it from here.
+(function(){
+  var saved = null;
+  try { saved = localStorage.getItem('cc.theme'); } catch(e){}
+  var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+})();
+</script>
 </head>
 <body>
 <div id="app">
@@ -65,6 +75,7 @@
       <span class="status-chip drive-chip" id="chip-drive"><span data-ico="drive" data-size="14"></span><span id="lbl-loaded">—</span></span>
       <span class="status-sep"></span>
       <span class="updated" id="lbl-updated"></span>
+      <button class="btn sm icon" id="theme-btn" onclick="toggleTheme()" aria-label="Switch theme" title="Switch theme"><span data-ico="moon"></span></button>
     </div>
   </header>
 

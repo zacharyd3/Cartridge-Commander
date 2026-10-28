@@ -407,11 +407,11 @@ function slotMapPanel(idxMap){
   panel.setAttribute('aria-label','Slot map');
   panel.innerHTML = panelHead('Slot map','Cartridge positions by magazine',`
     <div class="legend-inline">
-      <span><i style="background:#fff;border:1px solid #B9C0CA"></i>Data</span>
+      <span><i style="background:var(--panel);border:1px solid var(--control-2)"></i>Data</span>
       <span><i style="background:var(--accent-tint);border:1px dashed var(--accent)"></i>In drive</span>
       <span><i style="background:var(--cln-tint);border:1px solid var(--cln-line)"></i>Cleaning</span>
-      <span><i style="background:var(--panel-2);border:1px dashed #B9C0CA"></i>Empty</span>
-      <span><i style="background:#fff;border:2px solid var(--accent)"></i>Unload target</span>
+      <span><i style="background:var(--panel-2);border:1px dashed var(--control-2)"></i>Empty</span>
+      <span><i style="background:var(--panel);border:2px solid var(--accent)"></i>Unload target</span>
     </div>`);
   const body = el('div','panel-body');
   body.style.gap = '20px';
