@@ -201,7 +201,9 @@ def gfs_classify(record: Dict[str, Any]) -> str:
 
     Classification is done within the record's own retention stream, using
     calendar windows (month / ISO week) rather than weekday checks so it stays
-    stable regardless of which day backups run.
+    stable regardless of which day backups run.  A backup a later write has
+    overwritten is ``overwritten``: it is gone from its tape, so it is neither
+    a restore point nor a reason to call its tape recyclable.
     """
     ts = record.get("started_at")
     if not ts:
@@ -211,7 +213,7 @@ def gfs_classify(record: Dict[str, Any]) -> str:
     recyclable_set = set(gfs_get_recyclable())
 
     if record.get("overwritten"):
-        return "expired"
+        return "overwritten"
     if vol and vol not in recyclable_set and record.get("status") == "completed":
         cfg = get_gfs_config()
         stream = _gfs_completed_streams().get(gfs_stream_key(record), [])
