@@ -238,3 +238,33 @@ function trackBackupSpeed(bk){
     if(G.speedSamples.length > 2000) G.speedSamples.splice(0, G.speedSamples.length - 2000);
   }
 }
+
+// ── Theme ────────────────────────────────────────────────────────────────────
+// index.html's boot script stamps <html data-theme> before first paint. The topbar
+// button flips light/dark; flipping back to the OS's own theme forgets the saved
+// choice, so the page follows the OS again from then on.
+const THEME_STORE = 'cc.theme';
+const darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
+function currentTheme(){ return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'; }
+function setTheme(theme){
+  document.documentElement.dataset.theme = theme;
+  const btn = $('theme-btn');
+  if(!btn) return;
+  const label = `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`;
+  btn.innerHTML = ico(theme === 'dark' ? 'sun' : 'moon');
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+}
+function toggleTheme(){
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  try {
+    if(next === (darkScheme.matches ? 'dark' : 'light')) localStorage.removeItem(THEME_STORE);
+    else localStorage.setItem(THEME_STORE, next);
+  } catch(e){}
+  setTheme(next);
+}
+darkScheme.addEventListener('change', e => {
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_STORE); } catch(err){}
+  if(!saved) setTheme(e.matches ? 'dark' : 'light');
+});
