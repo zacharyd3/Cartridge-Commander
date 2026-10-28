@@ -45,7 +45,7 @@ function showPage(name){
   if(name==='library'){
     Promise.all([ensureRecords(), ensureSchedules()]).then(()=>refreshIfOn(['library']));
   }
-  if(name==='log') ensureRecords(true).then(()=>refreshIfOn(['log']));
+  if(name==='log') Promise.all([ensureRecords(true), pollLibraryData()]).then(()=>refreshIfOn(['log']));
   if(name==='media') Promise.all([ensureGfs(), ensureRecords(), pollLibraryData()]).then(()=>refreshIfOn(['media']));
   if(name==='retention') Promise.all([ensureSettings(true), ensureGfs(true)]).then(()=>refreshIfOn(['retention']));
   if(name==='backup') ensureSettings().then(()=>refreshIfOn(['backup']));
@@ -216,9 +216,9 @@ function applyState(data){
     }
   }
 
-  // A backup that just finished adds a record — refresh the cached list.
+  // A backup that just finished adds a record and changes its tape's free space.
   if(prevState?.backup_job?.running && !data.backup_job?.running){
-    ensureRecords(true).then(()=>refreshIfOn(['library','log']));
+    Promise.all([ensureRecords(true), pollLibraryData()]).then(()=>refreshIfOn(['library','log']));
   }
 
   // Avoid full page redraws on every poll, which cause flashing and wipe out

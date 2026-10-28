@@ -3,8 +3,9 @@
 // RETENTION PAGE — GFS policy, tape selection strategy, archive folder naming
 // ══════════════════════════════════════════════════════════════════════════════
 const TIER_COLOR = {daily:'var(--r250)', weekly:'var(--r500)', monthly:'var(--r650)', expired:'var(--neutral-2)'};
-// Tier column sort order: shortest-lived first, recyclable last.
-const TIER_RANK = {daily:1, weekly:2, monthly:3, expired:4};
+// Tier column sort order: shortest-lived first, recyclable, then gone from tape.
+const TIER_RANK = {daily:1, weekly:2, monthly:3, expired:4, overwritten:5};
+const TIER_LABEL = {expired:'recyclable'};
 
 function renderRetentionPage(c){
   const s = G.settings || {};
@@ -83,8 +84,10 @@ function coverageHTML(d, w, m){
 function gfsSideHTML(){
   const g = G.gfs;
   const recs = g?.records || [];
-  const counts = {daily:0, weekly:0, monthly:0, expired:0};
+  // Overwritten backups are gone from tape: not restore points, so not in the donut.
+  const counts = {daily:0, weekly:0, monthly:0, expired:0, overwritten:0};
   for(const r of recs) if(r.gfs_class in counts) counts[r.gfs_class]++;
+  const points = recs.length - counts.overwritten;
   const rec = g?.recyclable || [];
   const bySlot = Object.fromEntries((G.state?.slots||[]).filter(s=>s.volume_tag).map(s=>[s.volume_tag, s.slot]));
   const newest = v => { const r = recs.find(x=>x.volume_tag===v && x.status==='completed'); return r?.started_at; };
@@ -96,14 +99,15 @@ function gfsSideHTML(){
           {v:counts.weekly, color:TIER_COLOR.weekly, label:'Weekly'},
           {v:counts.monthly, color:TIER_COLOR.monthly, label:'Monthly'},
           {v:counts.expired, color:TIER_COLOR.expired, label:'Recyclable'},
-        ], {center:recs.length, sub:'backups', aria:`${counts.daily} daily, ${counts.weekly} weekly, ${counts.monthly} monthly, ${counts.expired} recyclable`})}
+        ], {center:points, sub:'backups', aria:`${counts.daily} daily, ${counts.weekly} weekly, ${counts.monthly} monthly, ${counts.expired} recyclable`})}
         ${legendHTML([
           {color:TIER_COLOR.daily, label:'Daily', value:counts.daily},
           {color:TIER_COLOR.weekly, label:'Weekly', value:counts.weekly},
           {color:TIER_COLOR.monthly, label:'Monthly', value:counts.monthly},
           {color:TIER_COLOR.expired, label:'Recyclable', value:counts.expired},
         ])}
-      </div></div>` : '<div class="chart-empty">Loading…</div>';
+      </div>
+      ${counts.overwritten ? `<span class="text-sm text-muted">Not counted: ${plural(counts.overwritten,'older backup')} overwritten on tape by later backups, no longer restorable</span>` : ''}</div>` : '<div class="chart-empty">Loading…</div>';
   const list = !g ? '' : rec.length
     ? `<div class="callout warn">${ico('alert',16)}<span>${plural(rec.length,'tape')} beyond retention · safe to reuse</span></div>
        <div style="border:1px solid var(--line-2);border-radius:6px">${rec.map(v => `<div style="display:flex;align-items:center;justify-content:space-between;min-height:48px;padding:6px 14px;border-bottom:1px solid var(--line-3)">
@@ -123,7 +127,7 @@ function gfsClassificationHTML(){
   return `<div style="border-top:1px solid var(--line-2)">
     <div class="panel-head" style="border-bottom:none"><h2 style="font-size:13px">Recent record classification</h2><span class="meta">Last ${plural(recs.length,'completed backup')}</span></div>
     <div class="tbl-wrap"><table class="tbl" data-sort-key="gfs"><thead><tr><th data-sort="text">Tier</th><th data-sort="text">Volume</th><th data-sort="text">Stream (job)</th><th data-sort="num">Started</th></tr></thead><tbody>
-    ${recs.map(r => `<tr><td data-v="${TIER_RANK[r.gfs_class] ?? 9}">${badge(r.gfs_class==='expired'?'recyclable':r.gfs_class, 'wide t-'+r.gfs_class)}</td><td class="vol">${esc(r.volume_tag||'—')}</td>
+    ${recs.map(r => `<tr><td data-v="${TIER_RANK[r.gfs_class] ?? 9}">${badge(TIER_LABEL[r.gfs_class] || r.gfs_class, 'wide t-'+r.gfs_class)}</td><td class="vol">${esc(r.volume_tag||'—')}</td>
       <td>${esc(r.stream==='(unlabeled)'?'Ad-hoc':r.stream||'—')}</td><td data-v="${r.started_at||''}">${esc(fmtWhen(r.started_at))}</td></tr>`).join('')}
     </tbody></table></div></div>`;
 }
