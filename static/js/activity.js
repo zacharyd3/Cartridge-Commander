@@ -65,6 +65,26 @@ function throughputByJobPanel(){
   </section>`;
 }
 
+// A tape's free space now, judged the way the Tape catalog and tape selection judge
+// it (drive_history.tape_fill_status), so the records show why backups went where they did.
+function volFreeNow(vol){
+  const m = (G.indexMeta||[]).find(x => x.volume_tag === vol);
+  const f = m?.fill;
+  if(!f) return null;
+  if(m.purpose==='archived' || (!m.present && m.archived_at)) return {text:'off-site', title:`${vol} is archived off-site`};
+  if(f.reusable) return {text:'recyclable — rewritten when picked', title:`${vol} is marked available or past retention: the next backup to pick it writes it from the start`};
+  const of = `${fmtTB(f.free_bytes)} of ${fmtTB(f.capacity_bytes)} free on ${vol} now (catalog estimate)`;
+  if(f.full) return {text:`full · ${fmtTB(f.free_bytes)} free`, tone:'var(--warn-text)', title:`${of} · ${fullReason(f)}, so backups no longer select it`};
+  return {text:`${fmtTB(f.free_bytes)} free now`, title:`${of} · backups skip it at ${f.reserve_pct}% free or less`};
+}
+function volFreeHTML(segs){
+  return segs.map(s => {
+    const f = volFreeNow(s.volume_tag);
+    if(!f) return '';
+    return `<div class="sub free"${f.tone?` style="color:${f.tone}"`:''} title="${esc(f.title)}">${segs.length > 1 ? `${esc(s.volume_tag)}: ` : ''}${esc(f.text)}</div>`;
+  }).join('');
+}
+
 function recordsPanelHTML(){
   const recs = G.records;
   const head = panelHead('Backup records','',`<span class="meta">${recs?`Latest ${Math.min(recs.length,50)}`:''}</span>`);
@@ -84,7 +104,7 @@ function recordsPanelHTML(){
         r.verify_errors ? `<div class="sub" style="color:var(--bad)">Verify: ${plural(r.verify_errors,'error')}</div>` : '',
       ].join('');
       return `<tr class="${r.status==='failed'?'fail':''}">
-        <td>${badge(l,t)}</td><td class="vol" data-v="${esc(r.volume_tag||'')}">${segs.length > 1 ? `<div>${badge(`${segs.length} tapes`,'info')}</div><div style="margin-top:4px">${tapeChainHTML(segs)}</div>` : esc(r.volume_tag||'—')}</td><td data-v="${r.started_at||''}">${esc(fmtWhen(r.started_at))}</td>
+        <td>${badge(l,t)}</td><td class="vol" data-v="${esc(r.volume_tag||'')}">${segs.length > 1 ? `<div>${badge(`${segs.length} tapes`,'info')}</div><div style="margin-top:4px">${tapeChainHTML(segs)}</div>` : esc(r.volume_tag||'—')}${volFreeHTML(segs)}</td><td data-v="${r.started_at||''}">${esc(fmtWhen(r.started_at))}</td>
         <td data-v="${esc(streamName(recordStream(r)))}"><div>${esc(streamName(recordStream(r)))}</div><div class="sub">${esc(r.mode||'full')}</div></td>
         <td class="num" data-v="${r.bytes_written||0}">${hBytes(r.bytes_written||0)}</td>
         <td style="max-width:420px" data-v="${esc((r.paths||[]).map(p=>p.split('/').pop()||p).join(', '))}"><div class="path" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc((r.paths||[]).join('\n'))}">${esc((r.paths||[]).map(p=>p.split('/').pop()||p).join(', '))}</div>
@@ -109,6 +129,6 @@ function actionLogHTML(){
 
 async function loadBackupRecords(){
   setHTML('records-panel', panelHead('Backup records') + '<div class="empty-state">Loading…</div>');
-  await ensureRecords(true);
+  await Promise.all([ensureRecords(true), pollLibraryData()]);
   refreshIfOn(['log']);
 }

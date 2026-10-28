@@ -177,7 +177,21 @@ def _pick_backup_tape(required_bytes: int = 0, exclude: Optional[List[str]] = No
         return (fits_rank, c["bucket"], c["last_bk"], c["volume_tag"])
 
     candidates.sort(key=_sort_key)
-    return candidates[0]
+
+    # One line for the backup log naming the tapes weighed, best first, so a
+    # pick can be checked against the strategy afterwards.
+    def _describe(c: Dict[str, Any]) -> str:
+        kind = "free" if not c["overwrite"] else ("blank" if c["bucket"] == 1 else "rewrite")
+        return (f"{c['volume_tag']} {bytes_human(int(c['remaining']))} {kind}"
+                + ("" if c["fits"] else ", too small"))
+    how = ("fill: fullest tape that fits first" if strategy == "fill"
+           else "spread: available, then blank, then least recently used")
+    considered = f"Tape choice ({how}): " + ", ".join(_describe(c) for c in candidates[:6])
+    if len(candidates) > 6:
+        considered += f" +{len(candidates) - 6} more"
+    if skipped_full:
+        considered += f"; skipped as full: {', '.join(skipped_full)}"
+    return {**candidates[0], "considered": considered + "."}
 
 
 def _find_return_slot(vol: str, exclude_slot: Optional[int] = None) -> Optional[int]:
@@ -404,6 +418,7 @@ class _TapeSpan:
             need = max(self.total_size - boundary, 0)
             chosen = _pick_backup_tape(required_bytes=need, exclude=self.volumes,
                                        allow_span=True, check_total=False)
+            self.log(chosen["considered"])
             ret = _find_return_slot(vol)
             if not ret:
                 raise TapeError(f"No free slot to return full tape {vol} to.")
@@ -632,6 +647,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
             publish_state_to_mqtt(refresh_state())
             try:
                 chosen = _pick_backup_tape(required_bytes=total_size, allow_span=allow_span)
+                append_backup_log(chosen["considered"], level="minimal")
                 append_backup_log(
                     f"Auto-selected {chosen['volume_tag']} from slot {chosen['slot']} "
                     f"(priority: {chosen['purpose']}, {'rewrite' if chosen['overwrite'] else 'append'}).",
