@@ -167,7 +167,7 @@ def inventory_worker(mode: str = "full"):
     from .state import TapeError, _fmt_ts_short, append_inventory_log, bytes_human, calc_eta_seconds, inventory_should_stop, inventory_wait_if_paused, is_cleaning_volume_tag, log_action, log_traceback, now_ts, request_inventory_resume, run_cmd, set_inventory_state
     from .mqtt import publish_state_to_mqtt
     from .changer import refresh_state
-    from .notify import notify_inventory_done
+    from .notify import check_full_tapes, notify_inventory_done
     loaded_slot: Optional[int] = None   # slot of tape *we* loaded during full scan
     orig_slot:   Optional[int] = None   # slot of tape that was in drive before we started
     scanned_count = 0
@@ -587,6 +587,12 @@ def inventory_worker(mode: str = "full"):
         append_inventory_log(final_msg)
         log_action("inventory", True, final_msg)
         notify_inventory_done(scanned_count, 0, 0)
+        # Capacities read from the drive, or tapes catalogued for the first
+        # time, can leave a tape full.
+        try:
+            check_full_tapes()
+        except Exception as e:
+            log_action("tape_full", False, f"Checking for full tapes failed: {e}")
 
     except Exception as e:
         # Make sure any tape we loaded gets returned before giving up

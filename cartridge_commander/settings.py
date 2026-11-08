@@ -69,7 +69,9 @@ def _load_ha_config() -> None:
 # Notification event config (which events trigger alerts + custom templates)
 # ---------------------------------------------------------------------------
 # Default message templates. Tokens: {vol} {paths} {written} {duration}
-# {speed} {verified} {errors} {error} {time}
+# {speed} {verified} {errors} {error} {time}.  The tape-full alert has its own:
+# {vol} (comma-separated when several tapes fill at once) {slot} {count}
+# {tapes} (one line per tape: where it is, free space and why it is full) {time}
 _NOTIFY_DEFAULT_TEMPLATES: Dict[str, str] = {
     "backup_success_title":   "Backup OK — {vol}",
     "backup_success_body":    "✅ {vol} completed\nWritten: {written} in {duration} ({speed}/s)\nVerified: {verified}",
@@ -77,13 +79,20 @@ _NOTIFY_DEFAULT_TEMPLATES: Dict[str, str] = {
     "backup_failure_body":    "❌ {vol} failed\nError: {error}\nTime: {time}",
     "verify_failure_title":   "Verify FAILED — {vol}",
     "verify_failure_body":    "⚠️ {vol} verify failed\nErrors: {errors}\n{error}",
+    "tape_full_title":        "Tape full — {vol}",
+    "tape_full_body":         "📼 Ready to swap out:\n{tapes}\nBackups now skip full tapes — replace with a blank or recyclable tape.",
 }
+
+# Which events send an alert.
+_NOTIFY_EVENT_KEYS = ("on_backup_success", "on_backup_failure", "on_verify_failure",
+                      "on_tape_full", "on_format_complete", "on_inventory_done")
 
 _notify_config_lock = threading.Lock()
 _notify_config: Dict[str, Any] = {
     "on_backup_success":  True,
     "on_backup_failure":  True,
     "on_verify_failure":  True,
+    "on_tape_full":       True,
     "on_format_complete": False,
     "on_inventory_done":  False,
     "templates": dict(_NOTIFY_DEFAULT_TEMPLATES),
@@ -98,8 +107,7 @@ def get_notify_config() -> Dict[str, Any]:
 def set_notify_config(updates: Dict[str, Any]) -> None:
     from .db import _db_set_json
     with _notify_config_lock:
-        for k in ("on_backup_success", "on_backup_failure", "on_verify_failure",
-                  "on_format_complete", "on_inventory_done"):
+        for k in _NOTIFY_EVENT_KEYS:
             if k in updates:
                 _notify_config[k] = bool(updates[k])
         if isinstance(updates.get("templates"), dict):
@@ -113,8 +121,7 @@ def _load_notify_config() -> None:
     data = _db_get_json("notify_config", None)
     if isinstance(data, dict):
         with _notify_config_lock:
-            for k in ("on_backup_success", "on_backup_failure", "on_verify_failure",
-                      "on_format_complete", "on_inventory_done"):
+            for k in _NOTIFY_EVENT_KEYS:
                 if k in data:
                     _notify_config[k] = bool(data[k])
             if isinstance(data.get("templates"), dict):

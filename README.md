@@ -160,6 +160,14 @@ whose leftover space is too small for your usual backup, e.g. `20` to treat a
 2.5 TB tape with 0.5 TB left as full. It can also be changed next to the tape
 selection strategy on the **Retention** page; the saved value takes precedence.
 
+When a tape in the library becomes full (after a backup, an inventory, or a
+higher threshold), a **Tape full** notification names the tape and its slot so
+you know to swap it out. It is on by default; turn it off, or edit its message,
+under **Settings → Notifications / Message templates**. Each fill is announced
+once: a tape is announced again only after it has been erased or recycled and
+filled anew. Tapes that were already full when this alert was added are not
+announced.
+
 ### How backups are laid out on tape
 
 Each backup is one tape file (a tar stream closed by a filemark), and new
