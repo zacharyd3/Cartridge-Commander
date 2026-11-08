@@ -6,14 +6,17 @@ const NOTIFY_EVENTS = [
   ['on_backup_success',  'Backup completed',     'A backup finished successfully'],
   ['on_backup_failure',  'Backup failed',        'A backup stopped with an error'],
   ['on_verify_failure',  'Verification failed',  'Read-back after a backup found errors'],
+  ['on_tape_full',       'Tape full',            'A tape in the library reached the full threshold and is ready to swap out'],
   ['on_format_complete', 'Format job finished',  'An erase or catalog reset completed'],
   ['on_inventory_done',  'Inventory finished',   'A full or quick scan completed'],
 ];
-const TEMPLATE_KEYS = ['backup_success_title','backup_success_body','backup_failure_title','backup_failure_body','verify_failure_title','verify_failure_body'];
+const TEMPLATE_KEYS = ['backup_success_title','backup_success_body','backup_failure_title','backup_failure_body','verify_failure_title','verify_failure_body','tape_full_title','tape_full_body'];
+// [name, key prefix, colour, tokens of its own (else the shared list above the templates)]
 const TEMPLATE_GROUPS = [
   ['Backup success','backup_success','var(--ok)'],
   ['Backup failure','backup_failure','var(--bad)'],
   ['Verify failure','verify_failure','var(--warn)'],
+  ['Tape full','tape_full','var(--accent)',['{vol}','{slot}','{count}','{tapes}','{time}']],
 ];
 let _haServices = [];   // cached list from last successful fetch
 
@@ -62,7 +65,8 @@ function renderSettingsPage(c){
           ${panelHead('Message templates','Title and body per alert type',`<div class="btn-row"><span class="result" id="notif-templates-result"></span><button class="btn sm primary" onclick="saveNotifyTemplates()">Save templates</button></div>`)}
           <div class="panel-body" style="gap:18px">
             <div class="btn-row" style="gap:6px;font-size:12px;color:var(--ink-3)"><span style="margin-right:4px">Tokens</span>${tokens.map(t=>`<span class="token">${t}</span>`).join('')}</div>
-            ${TEMPLATE_GROUPS.map(([name,k,color]) => `<div class="tmpl"><span class="h"><i style="background:${color}"></i>${name}</span>
+            ${TEMPLATE_GROUPS.map(([name,k,color,own]) => `<div class="tmpl"><span class="h"><i style="background:${color}"></i>${name}</span>
+              ${own ? `<div class="btn-row" style="gap:6px;font-size:12px;color:var(--ink-3)"><span style="margin-right:4px">Tokens for this alert</span>${own.map(t=>`<span class="token">${t}</span>`).join('')}</div>` : ''}
               <div class="r"><span>Title</span><input id="tmpl-${k}_title" class="mono" aria-label="${name} title"/><button class="btn icon lg" onclick="resetTemplate('${k}_title')" aria-label="Reset ${name} title to default" title="Reset to default">${ico('restore',14)}</button></div>
               <div class="r"><span>Body</span><textarea id="tmpl-${k}_body" rows="3" aria-label="${name} body"></textarea><button class="btn icon lg" onclick="resetTemplate('${k}_body')" aria-label="Reset ${name} body to default" title="Reset to default">${ico('restore',14)}</button></div></div>`).join('')}
           </div>

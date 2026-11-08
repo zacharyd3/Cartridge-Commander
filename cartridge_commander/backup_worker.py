@@ -532,7 +532,7 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
     from .state import TapeError, append_backup_log, backup_log_allows, bytes_human, is_cleaning_volume_tag, log_action, log_exit_codes, log_pipeline, log_traceback, normalize_backup_log_level, now_ts, run_cmd, secs_human, set_backup_state
     from .mqtt import publish_state_to_mqtt
     from .changer import ensure_under_backup_root, estimate_path_size, normalize_excludes, refresh_state
-    from .notify import notify_backup_failure, notify_backup_success
+    from .notify import check_full_tapes, notify_backup_failure, notify_backup_success
     from .settings import build_backup_dirname, get_allow_tape_spanning
     # The caller has already claimed the job (claim_backup_job), so it reads as
     # running/"scanning" while the sources are sized -- which can take minutes
@@ -1537,6 +1537,12 @@ def backup_worker(paths: List[str], backup_mode: str = "full",
             except Exception:
                 pass
         publish_state_to_mqtt(refresh_state())
+        # Whatever happened, the backup may have filled a tape (a failed one
+        # can stop at end-of-media); alert once the tape is back in its slot.
+        try:
+            check_full_tapes()
+        except Exception as e:
+            log_action("tape_full", False, f"Checking for full tapes failed: {e}")
 
 
 _TAR_TOTALS_PREFIX = "Total bytes written:"

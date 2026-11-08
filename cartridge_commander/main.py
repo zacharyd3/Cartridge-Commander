@@ -95,6 +95,13 @@ def run() -> None:
         migrate_legacy_layout()
     except Exception as e:
         _log.warning("Tape layout upgrade failed: %s", e)
+    # Tape-full alerts announce tapes as they fill; the first time, note the
+    # tapes that are already full so they aren't announced all at once.
+    try:
+        from .notify import seed_full_tape_tracking
+        seed_full_tape_tracking()
+    except Exception as e:
+        _log.warning("Could not record already-full tapes: %s", e)
     with shared_state._schedules_lock:
         _scheds = list(shared_state._schedules)
     _log.info("Loaded %d schedule(s), %d backup record(s).", len(_scheds), len(shared_state._backup_records))

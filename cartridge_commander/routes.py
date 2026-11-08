@@ -939,8 +939,18 @@ def api_settings_tape_full_reserve_save():
     if auth is not None: return auth
     p = request.get_json(silent=True) or {}
     pct = set_tape_full_reserve_pct(p.get("pct"))
+    # A higher threshold can make tapes full; alert in the background so the
+    # save doesn't wait on Home Assistant.
+    threading.Thread(target=_check_full_tapes_quietly, daemon=True).start()
     return jsonify({"ok": True, "detail": f"Tapes now count as full at {pct}% free or less.",
                     "pct": pct})
+
+def _check_full_tapes_quietly() -> None:
+    from .notify import check_full_tapes
+    try:
+        check_full_tapes()
+    except Exception as e:
+        log_action("tape_full", False, f"Checking for full tapes failed: {e}")
 
 @app.get("/api/settings")
 def api_settings_get():
