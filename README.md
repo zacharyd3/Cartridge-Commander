@@ -151,6 +151,18 @@ The GFS retention keep counts (`GFS_DAILY_KEEP`, `GFS_WEEKLY_KEEP`,
 from the **Retention** page in the UI; the saved values
 are persisted and take precedence over the env vars.
 
+Archived tapes (pulled from the library, by hand or as found by an inventory)
+stay in GFS retention: their backups keep counting as restore points while
+they are away, and the **Retention** page lists them as recyclable ("Not in
+library") once retention lets them go. Put one back and run a scan (the
+startup quick scan does this) and it is used exactly as if it had never left:
+overwritten from the start if it is past retention, kept and appended to (or
+skipped as full) if not; the inventory log says which. Backup history keeps
+its newest 500 records in full and, beyond that, every backup still on a
+tape, so a tape archived for years is not forgotten. Tapes whose history was
+already trimmed before this was fixed can be made reusable with **Reset
+catalog** on the Tape catalog page.
+
 `TAPE_FULL_RESERVE_PCT` (default `5`, range 5–50) sets when a tape counts as
 full: once its free space is at or below that percentage of its capacity,
 backups stop selecting it and the **Tape catalog** flags it as ready to

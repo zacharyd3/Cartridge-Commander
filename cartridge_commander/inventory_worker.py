@@ -287,6 +287,10 @@ def inventory_worker(mode: str = "full"):
         # Mark EVERYTHING not-present first (single write), then re-confirm
         # each tape we can actually see — slots AND drive.
         # ════════════════════════════════════════════════════════════════════
+        # Which tapes are archived, read before the re-confirmation below
+        # clears that flag on any that are back in the library (step 3).
+        archived_before = {str(i.get("volume_tag") or ""): i for i in list_all_known_indexes()
+                           if str(i.get("purpose") or "") == "archived"}
         append_inventory_log("Resetting presence flags in catalog…")
         mark_all_indexes_not_present()
 
@@ -521,21 +525,27 @@ def inventory_worker(mode: str = "full"):
                          | ({drive_vol_fresh} if drive_vol_fresh else set()))
             archived_count = 0
             returned_count = 0
+            from .records import gfs_get_recyclable
+            recyclable_now = set(gfs_get_recyclable())
             for idx in all_catalog:
                 vol_c = idx.get("volume_tag", "")
                 if not vol_c or is_cleaning_volume_tag(vol_c):
                     continue
-                was_present = idx.get("present", False)  # state BEFORE this scan (not updated yet by our writes)
                 now_present = vol_c in seen_vols
                 prev_purpose = str(idx.get("purpose") or "")
 
-                if now_present and prev_purpose == "archived":
-                    # Tape has come back — log it
+                if now_present and vol_c in archived_before:
+                    # Tape has come back.  Its backups stayed in GFS retention
+                    # while it was away, so it is reused exactly as if it had
+                    # never left: overwritten once retention lets it go.
                     returned_count += 1
+                    reuse = ("past GFS retention — backups will overwrite it"
+                             if vol_c in recyclable_now
+                             else "its backups are still kept by GFS retention")
                     append_inventory_log(
                         f"✓ {vol_c} has returned to the library "
-                        f"(was archived since {_fmt_ts_short(idx.get('archived_at'))}).")
-                    log_action("inventory", True, f"{vol_c} returned from archived state.")
+                        f"(archived since {_fmt_ts_short(archived_before[vol_c].get('archived_at'))}); {reuse}.")
+                    log_action("inventory", True, f"{vol_c} returned from archived state; {reuse}.")
 
                 elif not now_present and idx.get("last_seen_slot") and prev_purpose not in ("archived",):
                     # Tape was previously known in a slot but is now gone — archive it

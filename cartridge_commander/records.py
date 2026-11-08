@@ -11,6 +11,28 @@ from .settings import get_gfs_config
 from . import state as shared_state
 
 
+# Backup history keeps the newest records in full.  Older ones are kept only
+# while their backup is still on a tape -- GFS retention decides from them
+# whether that tape may be reused, so dropping one would leave its tape (often
+# one archived off-site and brought back later) neither kept nor recyclable,
+# skipped as full forever.  The bounded set of those is stored without the
+# bulky list of skipped items.
+_RECORDS_KEEP_FULL = 500
+
+
+def _still_on_tape(rec: Dict[str, Any]) -> bool:
+    """A completed backup no later write has overwritten: a GFS restore point."""
+    return (rec.get("status") == "completed" and bool(rec.get("started_at"))
+            and bool(rec.get("volume_tag")) and not rec.get("overwritten"))
+
+
+def _records_to_store(recs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """What of the newest-first ``recs`` is persisted (see _RECORDS_KEEP_FULL)."""
+    older = [{k: v for k, v in r.items() if k != "skipped_items"}
+             for r in recs[_RECORDS_KEEP_FULL:] if _still_on_tape(r)]
+    return list(recs[:_RECORDS_KEEP_FULL]) + older
+
+
 def _load_backup_records() -> None:
     from .db import _db_get_json, _db_set_json
     data = _db_get_json("backup_records", None)
@@ -24,16 +46,16 @@ def _load_backup_records() -> None:
     try:
         with open(BACKUP_RECORDS_FILE) as f:
             shared_state._backup_records = json.load(f)
-        _db_set_json("backup_records", shared_state._backup_records[:500])
+        _db_set_json("backup_records", _records_to_store(shared_state._backup_records))
     except Exception:
         shared_state._backup_records = []
 
 
 def _save_backup_records() -> None:
     from .db import _db_set_json
-    # Records are kept newest-first, so the newest 500 are the head of the list.
+    # Records are kept newest-first, so the newest ones are the head of the list.
     with shared_state._backup_records_lock:
-        payload = list(shared_state._backup_records[:500])
+        payload = _records_to_store(shared_state._backup_records)
     _db_set_json("backup_records", payload)
 
 
@@ -196,7 +218,15 @@ def _gfs_stream_keep(stream: List[Dict[str, Any]], cfg: Dict[str, int]):
     return keep_monthly, keep_weekly, keep_daily
 
 
-def gfs_classify(record: Dict[str, Any]) -> str:
+def gfs_stream_keeps() -> Dict[str, Any]:
+    """(monthly, weekly, daily) kept volume-tag sets for every stream, keyed
+    by stream key -- for classifying many records at once (gfs_classify)."""
+    cfg = get_gfs_config()
+    return {key: _gfs_stream_keep(stream, cfg) for key, stream in _gfs_completed_streams().items()}
+
+
+def gfs_classify(record: Dict[str, Any], recyclable_set: Optional[set] = None,
+                 stream_keeps: Optional[Dict[str, Any]] = None) -> str:
     """Classify a backup record for display purposes.
 
     Classification is done within the record's own retention stream, using
@@ -204,20 +234,27 @@ def gfs_classify(record: Dict[str, Any]) -> str:
     stable regardless of which day backups run.  A backup a later write has
     overwritten is ``overwritten``: it is gone from its tape, so it is neither
     a restore point nor a reason to call its tape recyclable.
+
+    Classifying many records, pass ``recyclable_set`` (gfs_get_recyclable) and
+    ``stream_keeps`` (gfs_stream_keeps) so retention is worked out once.
     """
     ts = record.get("started_at")
     if not ts:
         return "expired"
 
     vol = record.get("volume_tag", "")
-    recyclable_set = set(gfs_get_recyclable())
+    if recyclable_set is None:
+        recyclable_set = set(gfs_get_recyclable())
 
     if record.get("overwritten"):
         return "overwritten"
     if vol and vol not in recyclable_set and record.get("status") == "completed":
-        cfg = get_gfs_config()
-        stream = _gfs_completed_streams().get(gfs_stream_key(record), [])
-        keep_monthly, keep_weekly, _keep_daily = _gfs_stream_keep(stream, cfg)
+        key = gfs_stream_key(record)
+        if stream_keeps is not None:
+            keep_monthly, keep_weekly, _keep_daily = stream_keeps.get(key, (set(), set(), set()))
+        else:
+            stream = _gfs_completed_streams().get(key, [])
+            keep_monthly, keep_weekly, _keep_daily = _gfs_stream_keep(stream, get_gfs_config())
         if vol in keep_monthly:
             return "monthly"
         if vol in keep_weekly:
